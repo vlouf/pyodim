@@ -296,6 +296,25 @@ def check_nyquist(dset):
 
 
 def read_odim_slice(odim_file, nslice=1, include_fields=[], exclude_fields=[]):
+    '''
+    Read into an xarray dataset one sweep of the ODIM file.
+
+    Parameters:
+    ===========
+    odim_file: str
+        ODIM H5 filename.
+    nslice: int
+        Starting at 1, slice number we want to extract
+    include_fields: list
+        Specific fields to be exclusively read.
+    exclude_fields: list
+        Specific fields to be excluded from reading.
+
+    Returns:
+    ========
+    dataset: xarray.Dataset
+        xarray dataset of one sweep of the ODIM file.
+    '''
     if nslice == 0:
         raise ValueError('Slice numbering start at 1.')
     if type(include_fields) is not list:
@@ -363,11 +382,30 @@ def read_odim_slice(odim_file, nslice=1, include_fields=[], exclude_fields=[]):
 
 
 def read_odim(odim_file, **kwargs):
+        '''
+    Read an ODIM H5 file.
+
+    Parameters:
+    ===========
+    odim_file: str
+        ODIM H5 filename.
+    include_fields: list
+        Specific fields to be exclusively read.
+    exclude_fields: list
+        Specific fields to be excluded from reading.
+
+    Returns:
+    ========
+    radar: list
+        List of xarray datasets, each item in a the list is one sweep of the
+        radar data (ordered from lowest elevation scan to highest).
+    '''
     with h5py.File(odim_file) as hfile:
         nsweep = len([k for k in hfile['/'].keys() if k.startswith('dataset')])
 
     radar = []
-    for sl in range(1, nsweep + 1):
-        c = dask.delayed(read_odim_slice)(odim_file, sl, **kwargs)
+    for sweep in range(1, nsweep + 1):
+        c = dask.delayed(read_odim_slice)(odim_file, sweep, **kwargs)
         radar.append(c)
+
     return radar
