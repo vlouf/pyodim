@@ -382,7 +382,7 @@ def read_odim_slice(odim_file, nslice=1, include_fields=[], exclude_fields=[]):
 
 
 def read_odim(odim_file, **kwargs):
-        '''
+    '''
     Read an ODIM H5 file.
 
     Parameters:
