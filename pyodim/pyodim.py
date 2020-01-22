@@ -295,7 +295,7 @@ def check_nyquist(dset):
     assert np.abs(nyquist - ny_int) < 0.5, 'Nyquist not consistent with PRF'
 
 
-def read_odim_slice(odim_file, nslice=1, include_fields=[], exclude_fields=[]):
+def read_odim_slice(odim_file, nslice=0, include_fields=[], exclude_fields=[]):
     '''
     Read into an xarray dataset one sweep of the ODIM file.
 
@@ -304,7 +304,7 @@ def read_odim_slice(odim_file, nslice=1, include_fields=[], exclude_fields=[]):
     odim_file: str
         ODIM H5 filename.
     nslice: int
-        Starting at 1, slice number we want to extract
+        Slice number we want to extract (start indexing at 0).
     include_fields: list
         Specific fields to be exclusively read.
     exclude_fields: list
@@ -321,17 +321,20 @@ def read_odim_slice(odim_file, nslice=1, include_fields=[], exclude_fields=[]):
         raise TypeError('Argument `include_fields` should be a list')
 
     with h5py.File(odim_file) as hfile:
+        # Number of sweep in dataset
         nsweep = len([k for k in hfile['/'].keys() if k.startswith('dataset')])
         assert nslice <= nsweep, f"Wrong slice number asked. Only {nsweep} available."
 
+        # Order datasets by increasing elevations.
         sweeps = dict()
         for key in hfile['/'].keys():
             if key.startswith('dataset'):
                 sweeps[key] = hfile[f'/{key}/where'].attrs['elangle']
 
         sorted_keys = sorted(sweeps, key=lambda k: sweeps[k])
-        rootkey = sorted_keys[nslice - 1]
+        rootkey = sorted_keys[nslice]
 
+        # Retrieve dataset metadata and coordinates metadata.
         metadata, coordinates_metadata = get_dataset_metadata(hfile, rootkey)
 
         dataset = xr.Dataset()
