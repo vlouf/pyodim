@@ -320,7 +320,7 @@ def read_odim_slice(odim_file, nslice=0, include_fields=[], exclude_fields=[]):
     if type(include_fields) is not list:
         raise TypeError('Argument `include_fields` should be a list')
 
-    with h5py.File(odim_file) as hfile:
+    with h5py.File(odim_file, 'r') as hfile:
         # Number of sweep in dataset
         nsweep = len([k for k in hfile['/'].keys() if k.startswith('dataset')])
         assert nslice <= nsweep, f"Wrong slice number asked. Only {nsweep} available."
@@ -406,7 +406,7 @@ def read_odim(odim_file, lazy_load=True, **kwargs):
         List of xarray datasets, each item in a the list is one sweep of the
         radar data (ordered from lowest elevation scan to highest).
     '''
-    with h5py.File(odim_file) as hfile:
+    with h5py.File(odim_file, 'r') as hfile:
         nsweep = len([k for k in hfile['/'].keys() if k.startswith('dataset')])
 
     radar = []
