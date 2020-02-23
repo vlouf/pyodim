@@ -315,8 +315,8 @@ def read_odim_slice(odim_file, nslice=0, include_fields=[], exclude_fields=[]):
     dataset: xarray.Dataset
         xarray dataset of one sweep of the ODIM file.
     '''
-    if nslice == 0:
-        raise ValueError('Slice numbering start at 1.')
+    # if nslice == 0:
+    #     raise ValueError('Slice numbering start at 1.')
     if type(include_fields) is not list:
         raise TypeError('Argument `include_fields` should be a list')
 
@@ -410,7 +410,7 @@ def read_odim(odim_file, lazy_load=True, **kwargs):
         nsweep = len([k for k in hfile['/'].keys() if k.startswith('dataset')])
 
     radar = []
-    for sweep in range(1, nsweep + 1):
+    for sweep in range(0, nsweep):
         c = dask.delayed(read_odim_slice)(odim_file, sweep, **kwargs)
         radar.append(c)
 
