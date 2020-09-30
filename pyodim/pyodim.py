@@ -358,7 +358,12 @@ def read_odim_slice(odim_file, nslice=0, include_fields=[], exclude_fields=[]):
         dataset = xr.Dataset()
         dataset.attrs = get_root_metadata(hfile)
         dataset.attrs.update(metadata)
-        check_nyquist(dataset)
+        try:
+            check_nyquist(dataset)
+        except AssertionError:
+            print("Nyquist not consistent with PRF")
+            pass
+
         for datakey in hfile[f"/{rootkey}"].keys():
             if not datakey.startswith("data"):
                 continue
