@@ -9,16 +9,14 @@ from shutil import rmtree
 from setuptools import find_packages, setup, Command
 
 # Package meta-data.
-NAME = 'pyodim'
+NAME = "pyodim"
 DESCRIPTION = """An Odim hdf5 file reader."""
-URL = 'https://github.com/vlouf/pyodim'
-EMAIL = 'valentin.louf@bom.gov.au'
-AUTHOR = 'Valentin Louf'
+URL = "https://github.com/vlouf/pyodim"
+EMAIL = "valentin.louf@bom.gov.au"
+AUTHOR = "Valentin Louf"
 
 # What packages are required for this module to be executed?
-REQUIRED = [
-    'numpy', 'dask', 'xarray', 'h5py', 'pyproj'
-]
+REQUIRED = ["numpy", "dask", "xarray", "h5py", "pyproj"]
 
 # The rest you shouldn't have to touch too much :)
 # ------------------------------------------------
@@ -29,25 +27,25 @@ here = os.path.abspath(os.path.dirname(__file__))
 
 # Import the README and use it as the long-description.
 # Note: this will only work if 'README.rst' is present in your MANIFEST.in file!
-with io.open(os.path.join(here, 'README.md'), encoding='utf-8') as f:
-    long_description = '\n' + f.read()
+with io.open(os.path.join(here, "README.md"), encoding="utf-8") as f:
+    long_description = "\n" + f.read()
 
 # Load the package's __version__.py module as a dictionary.
 about = {}
-with open(os.path.join(here, NAME, '__version__.py')) as f:
+with open(os.path.join(here, NAME, "__version__.py")) as f:
     exec(f.read(), about)
 
 
 class PublishCommand(Command):
     """Support setup.py publish."""
 
-    description = 'Build and publish the package.'
+    description = "Build and publish the package."
     user_options = []
 
     @staticmethod
     def status(s):
         """Prints things in bold."""
-        print('\033[1m{0}\033[0m'.format(s))
+        print("\033[1m{0}\033[0m".format(s))
 
     def initialize_options(self):
         pass
@@ -57,16 +55,16 @@ class PublishCommand(Command):
 
     def run(self):
         try:
-            self.status('Removing previous builds…')
-            rmtree(os.path.join(here, 'dist'))
+            self.status("Removing previous builds…")
+            rmtree(os.path.join(here, "dist"))
         except FileNotFoundError:
             pass
 
-        self.status('Building Source and Wheel (universal) distribution…')
-        os.system('{0} setup.py sdist bdist_wheel --universal'.format(sys.executable))
+        self.status("Building Source and Wheel (universal) distribution…")
+        os.system("{0} setup.py sdist bdist_wheel --universal".format(sys.executable))
 
-        self.status('Uploading the package to PyPi via Twine…')
-        os.system('twine upload dist/*')
+        self.status("Uploading the package to PyPi via Twine…")
+        os.system("twine upload dist/*")
 
         sys.exit()
 
@@ -74,42 +72,37 @@ class PublishCommand(Command):
 # Where the magic happens:
 setup(
     name=NAME,
-    version=about['__version__'],
+    version=about["__version__"],
     description=DESCRIPTION,
     long_description=long_description,
     author=AUTHOR,
     author_email=EMAIL,
     url=URL,
-    packages=find_packages(exclude=('tests',)),
+    packages=find_packages(exclude=("tests",)),
     # If your package is a single module, use this instead of 'packages':
     # py_modules=['mypackage'],
-
     # entry_points={
     #     'console_scripts': ['mycli=mymodule:cli'],
     # },
     install_requires=REQUIRED,
     include_package_data=True,
-    license='ISC',
+    license="ISC",
     classifiers=[  # Optional
         # How mature is this project? Common values are
         #   3 - Alpha
         #   4 - Beta
         #   5 - Production/Stable
-        'Development Status :: 3 - Alpha',
-
+        "Development Status :: 3 - Alpha",
         # Indicate who your project is intended for
-        'Intended Audience :: Science/Research',
-        'Topic :: Scientific/Engineering :: Atmospheric Science',
-
+        "Intended Audience :: Science/Research",
+        "Topic :: Scientific/Engineering :: Atmospheric Science",
         # Pick your license as you wish
-        'License :: OSI Approved :: MIT License',
-        'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7',
-        'Programming Language :: Python :: 3.8',
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
     ],
-    keywords='odim h5 radar file reader',  # Optional
+    keywords="odim h5 radar file reader",  # Optional
     # $ setup.py publish support.
-    cmdclass={
-        'publish': PublishCommand,
-    },
+    cmdclass={"publish": PublishCommand,},
 )
