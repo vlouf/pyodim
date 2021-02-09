@@ -272,9 +272,11 @@ def get_dataset_metadata(hfile, dataset="dataset1"):
     metadata = dict()
     coordinates_metadata = dict()
     # General metadata
-    metadata["NI"] = hfile[f"/{dataset}/how"].attrs["NI"]
-    metadata["highprf"] = hfile[f"/{dataset}/how"].attrs["highprf"]
-    metadata["product"] = _to_str(hfile[f"/{dataset}/what"].attrs["product"])
+    for k in ["NI", "highprf", "product"]:
+        try:
+            metadata[k] = hfile[f"/{dataset}/how"].attrs[k]
+        except Exception:
+            pass
 
     sdate = _to_str(hfile[f"/{dataset}/what"].attrs["startdate"])
     stime = _to_str(hfile[f"/{dataset}/what"].attrs["starttime"])
