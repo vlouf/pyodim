@@ -23,6 +23,7 @@ Natively reading ODIM H5 radar files in Python.
     read_odim
 """
 import datetime
+import traceback
 from typing import Dict, List, Tuple
 
 import dask
@@ -38,6 +39,22 @@ def _to_str(t) -> str:
     Transform binary into string.
     """
     return t.decode("utf-8")
+
+
+def buffer(func):
+    """
+    Decorator to catch and kill error message.
+    """
+
+    def wrapper(*args, **kwargs):
+        try:
+            rslt = func(*args, **kwargs)
+        except Exception:
+            traceback.print_exc()
+            rslt = None
+        return rslt
+
+    return wrapper
 
 
 def field_metadata(quantity_name: str) -> Dict:
@@ -330,6 +347,7 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     return metadata, coordinates_metadata
 
 
+@buffer
 def check_nyquist(dset) -> None:
     """
     Check if the dataset Nyquist velocity corresponds to the PRF information.
