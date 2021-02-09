@@ -12,14 +12,14 @@ Natively reading ODIM H5 radar files in Python.
 
     _to_str
     buffer
-    field_metadata
     cartesian_to_geographic
-    radar_coordinates_to_xyz
-    generate_timestamp
-    get_root_metadata
-    coord_from_metadata
-    get_dataset_metadata
     check_nyquist
+    coord_from_metadata
+    field_metadata
+    generate_timestamp
+    get_dataset_metadata
+    get_root_metadata
+    radar_coordinates_to_xyz
     read_odim_slice
     read_odim
 """
@@ -44,7 +44,8 @@ def _to_str(t) -> str:
 
 def buffer(func):
     """
-    Decorator to catch and kill error message.
+    Decorator to catch and kill error message. Almost want to name the function
+    dont_fail.
     """
 
     def wrapper(*args, **kwargs):
@@ -56,6 +57,80 @@ def buffer(func):
         return rslt
 
     return wrapper
+
+
+def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Transform cartesian coordinates to lat/lon using the Azimuth Equidistant
+    projection.
+
+    Parameters:
+    ===========
+    x: ndarray
+        x-axis cartesian coordinates.
+    y: ndarray
+        y-axis cartesian coordinates. Same dimension as x
+    lon0: float
+        Radar site longitude.
+    lat0: float
+        Radar site latitude.
+
+    Returns:
+    lon: ndarray
+        Longitude of each gate.
+    lat: ndarray
+        Latitude of each gate.
+    """
+    georef = pyproj.Proj(f"+proj=aeqd +lon_0={lon0} +lat_0={lat0} +ellps=WGS84")
+    lon, lat = georef(x, y, inverse=True)
+    lon = lon.astype(np.float32)
+    lat = lat.astype(np.float32)
+    return lon, lat
+
+
+@buffer
+def check_nyquist(dset) -> None:
+    """
+    Check if the dataset Nyquist velocity corresponds to the PRF information.
+    """
+    wavelength = dset.attrs["wavelength"]
+    prf = dset.attrs["highprf"]
+    nyquist = dset.attrs["NI"]
+    ny_int = 1e-2 * prf * wavelength / 4
+
+    assert np.abs(nyquist - ny_int) < 0.5, "Nyquist not consistent with PRF"
+
+
+def coord_from_metadata(metadata: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Create the radar coordinates from the ODIM H5 metadata specification.
+
+    Parameter:
+    ==========
+    metadata: dict()
+        Metadata dictionnary containing the specific ODIM H5 keys: astart,
+        nrays, nbins, rstart, rscale, elangle.
+
+    Returns:
+    ========
+    r: ndarray<nbins>
+        Sweep range
+    azimuth: ndarray<nrays>
+        Sweep azimuth
+    elev: float
+        Sweep elevation
+    """
+    da = 360 / metadata["nrays"]
+    azimuth = np.linspace(metadata["astart"] + da / 2, 360 - da, metadata["nrays"], dtype=np.float32)
+
+    # rstart is in KM !!! STUPID.
+    rstart_center = 1e3 * metadata["rstart"] + metadata["rscale"] / 2
+    r = np.arange(
+        rstart_center, rstart_center + metadata["nbins"] * metadata["rscale"], metadata["rscale"], dtype=np.float32
+    )
+
+    elev = np.array([metadata["elangle"]], dtype=np.float32)
+    return r, azimuth, elev
 
 
 def field_metadata(quantity_name: str) -> Dict:
@@ -109,72 +184,6 @@ def field_metadata(quantity_name: str) -> Dict:
     return attrs
 
 
-def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: float) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Transform cartesian coordinates to lat/lon using the Azimuth Equidistant
-    projection.
-
-    Parameters:
-    ===========
-    x: ndarray
-        x-axis cartesian coordinates.
-    y: ndarray
-        y-axis cartesian coordinates. Same dimension as x
-    lon0: float
-        Radar site longitude.
-    lat0: float
-        Radar site latitude.
-
-    Returns:
-    lon: ndarray
-        Longitude of each gate.
-    lat: ndarray
-        Latitude of each gate.
-    """
-    georef = pyproj.Proj(f"+proj=aeqd +lon_0={lon0} +lat_0={lat0} +ellps=WGS84")
-    lon, lat = georef(x, y, inverse=True)
-    lon = lon.astype(np.float32)
-    lat = lat.astype(np.float32)
-    return lon, lat
-
-
-def radar_coordinates_to_xyz(
-    r: np.ndarray, azimuth: np.ndarray, elevation: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Transform radar coordinates to cartesian coordinates.
-
-    Parameters:
-    ===========
-    r: ndarray<nbins>
-        Sweep range.
-    azimuth: ndarray<nrays>
-        Sweep azimuth.
-    elevation: float
-        Sweep elevation.
-
-    Returns:
-    ========
-    x, y, z: ndarray<nrays, nbins>
-        XYZ cartesian coordinates.
-    """
-    # To proper spherical coordinates.
-    theta = np.deg2rad(90 - elevation)
-    phi = 450 - azimuth
-    phi[phi >= 360] -= 360
-    phi = np.deg2rad(phi)
-
-    R, PHI = np.meshgrid(r, phi)
-    R = R.astype(np.float32)
-    PHI = PHI.astype(np.float32)
-
-    x = R * np.sin(theta) * np.cos(PHI)
-    y = R * np.sin(theta) * np.sin(PHI)
-    z = R * np.cos(theta)
-
-    return x, y, z
-
-
 def generate_timestamp(stime: str, etime: str, nrays: int, a1gate: int) -> np.ndarray:
     """
     Generate timestamp for each ray.
@@ -200,81 +209,6 @@ def generate_timestamp(stime: str, etime: str, nrays: int, a1gate: int) -> np.nd
     trange = pd.date_range(sdtime, edtime, nrays)
 
     return np.roll(trange, a1gate)
-
-
-def get_root_metadata(hfile) -> Dict:
-    """
-    Get the metadata at the root of the ODIM H5 file.
-
-    Parameters:
-    ===========
-    hfile: h5py.File
-        H5 file identifier.
-
-    Returns:
-    ========
-    rootmetadata: dict
-        Metadata at the root of the ODIM H5 file.
-    """
-    rootmetadata = {}
-    # Root
-    rootmetadata["Conventions"] = _to_str(hfile.attrs["Conventions"])
-
-    # Where
-    rootmetadata["latitude"] = hfile["/where"].attrs["lat"]
-    rootmetadata["longitude"] = hfile["/where"].attrs["lon"]
-    rootmetadata["height"] = hfile["/where"].attrs["height"]
-
-    # What
-    sdate = _to_str(hfile["/what"].attrs["date"])
-    stime = _to_str(hfile["/what"].attrs["time"])
-    rootmetadata["date"] = datetime.datetime.strptime(sdate + stime, "%Y%m%d%H%M%S").isoformat()
-    for k in ["object", "source", "version"]:
-        try:
-            rootmetadata[k] = _to_str(hfile["/what"].attrs[k])
-        except KeyError:
-            pass
-
-    # How
-    for k in ["beamwH", "beamwV", "copyright", "rpm", "wavelength"]:
-        try:
-            rootmetadata[k] = hfile["/how"].attrs[k]
-        except KeyError:
-            pass
-
-    return rootmetadata
-
-
-def coord_from_metadata(metadata: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Create the radar coordinates from the ODIM H5 metadata specification.
-
-    Parameter:
-    ==========
-    metadata: dict()
-        Metadata dictionnary containing the specific ODIM H5 keys: astart,
-        nrays, nbins, rstart, rscale, elangle.
-
-    Returns:
-    ========
-    r: ndarray<nbins>
-        Sweep range
-    azimuth: ndarray<nrays>
-        Sweep azimuth
-    elev: float
-        Sweep elevation
-    """
-    da = 360 / metadata["nrays"]
-    azimuth = np.linspace(metadata["astart"] + da / 2, 360 - da, metadata["nrays"], dtype=np.float32)
-
-    # rstart is in KM !!! STUPID.
-    rstart_center = 1e3 * metadata["rstart"] + metadata["rscale"] / 2
-    r = np.arange(
-        rstart_center, rstart_center + metadata["nbins"] * metadata["rscale"], metadata["rscale"], dtype=np.float32
-    )
-
-    elev = np.array([metadata["elangle"]], dtype=np.float32)
-    return r, azimuth, elev
 
 
 def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
@@ -329,17 +263,84 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     return metadata, coordinates_metadata
 
 
-@buffer
-def check_nyquist(dset) -> None:
+def get_root_metadata(hfile) -> Dict:
     """
-    Check if the dataset Nyquist velocity corresponds to the PRF information.
-    """
-    wavelength = dset.attrs["wavelength"]
-    prf = dset.attrs["highprf"]
-    nyquist = dset.attrs["NI"]
-    ny_int = 1e-2 * prf * wavelength / 4
+    Get the metadata at the root of the ODIM H5 file.
 
-    assert np.abs(nyquist - ny_int) < 0.5, "Nyquist not consistent with PRF"
+    Parameters:
+    ===========
+    hfile: h5py.File
+        H5 file identifier.
+
+    Returns:
+    ========
+    rootmetadata: dict
+        Metadata at the root of the ODIM H5 file.
+    """
+    rootmetadata = {}
+    # Root
+    rootmetadata["Conventions"] = _to_str(hfile.attrs["Conventions"])
+
+    # Where
+    rootmetadata["latitude"] = hfile["/where"].attrs["lat"]
+    rootmetadata["longitude"] = hfile["/where"].attrs["lon"]
+    rootmetadata["height"] = hfile["/where"].attrs["height"]
+
+    # What
+    sdate = _to_str(hfile["/what"].attrs["date"])
+    stime = _to_str(hfile["/what"].attrs["time"])
+    rootmetadata["date"] = datetime.datetime.strptime(sdate + stime, "%Y%m%d%H%M%S").isoformat()
+    for k in ["object", "source", "version"]:
+        try:
+            rootmetadata[k] = _to_str(hfile["/what"].attrs[k])
+        except KeyError:
+            pass
+
+    # How
+    for k in ["beamwH", "beamwV", "copyright", "rpm", "wavelength"]:
+        try:
+            rootmetadata[k] = hfile["/how"].attrs[k]
+        except KeyError:
+            pass
+
+    return rootmetadata
+
+
+def radar_coordinates_to_xyz(
+    r: np.ndarray, azimuth: np.ndarray, elevation: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Transform radar coordinates to cartesian coordinates.
+
+    Parameters:
+    ===========
+    r: ndarray<nbins>
+        Sweep range.
+    azimuth: ndarray<nrays>
+        Sweep azimuth.
+    elevation: float
+        Sweep elevation.
+
+    Returns:
+    ========
+    x, y, z: ndarray<nrays, nbins>
+        XYZ cartesian coordinates.
+    """
+    # To proper spherical coordinates.
+    theta = np.deg2rad(90 - elevation)
+    phi = 450 - azimuth
+    phi[phi >= 360] -= 360
+    phi = np.deg2rad(phi)
+
+    R, PHI = np.meshgrid(r, phi)
+    R = R.astype(np.float32)
+    PHI = PHI.astype(np.float32)
+
+    x = R * np.sin(theta) * np.cos(PHI)
+    y = R * np.sin(theta) * np.sin(PHI)
+    z = R * np.cos(theta)
+
+    return x, y, z
 
 
 def read_odim_slice(
