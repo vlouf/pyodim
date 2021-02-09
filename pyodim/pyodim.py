@@ -341,7 +341,9 @@ def check_nyquist(dset) -> None:
     assert np.abs(nyquist - ny_int) < 0.5, "Nyquist not consistent with PRF"
 
 
-def read_odim_slice(odim_file: str, nslice: int = 0, include_fields: List = [], exclude_fields: List = []):
+def read_odim_slice(
+    odim_file: str, nslice: int = 0, include_fields: List = [], exclude_fields: List = []
+) -> xr.Dataset:
     """
     Read into an xarray dataset one sweep of the ODIM file.
 
