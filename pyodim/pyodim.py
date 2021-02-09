@@ -225,40 +225,21 @@ def get_root_metadata(hfile) -> Dict:
     rootmetadata["height"] = hfile["/where"].attrs["height"]
 
     # What
-    sdate = hfile["/what"].attrs["date"].decode("utf-8")
-    stime = hfile["/what"].attrs["time"].decode("utf-8")
+    sdate = _to_str(hfile["/what"].attrs["date"])
+    stime = _to_str(hfile["/what"].attrs["time"])
     rootmetadata["date"] = datetime.datetime.strptime(sdate + stime, "%Y%m%d%H%M%S").isoformat()
-    try:
-        rootmetadata["object"] = _to_str(hfile["/what"].attrs["object"])
-    except KeyError:
-        pass
-    try:
-        rootmetadata["source"] = _to_str(hfile["/what"].attrs["source"])
-    except KeyError:
-        pass
-    try:
-        rootmetadata["version"] = _to_str(hfile["/what"].attrs["version"])
-    except KeyError:
-        pass
+    for k in ["object", "source", "version"]:
+        try:
+            rootmetadata[k] = _to_str(hfile["/what"].attrs[k])
+        except KeyError:
+            pass
 
     # How
-    try:
-        rootmetadata["beamwH"] = hfile["/how"].attrs["beamwH"]
-        rootmetadata["beamwV"] = hfile["/how"].attrs["beamwV"]
-    except Exception:
-        pass
-    try:
-        rootmetadata["copyright"] = _to_str(hfile["/how"].attrs["copyright"])
-    except KeyError:
-        pass
-    try:
-        rootmetadata["rpm"] = hfile["/how"].attrs["rpm"]
-    except KeyError:
-        pass
-    try:
-        rootmetadata["wavelength"] = hfile["/how"].attrs["wavelength"]
-    except KeyError:
-        pass
+    for k in ["beamwH", "beamwV", "copyright", "rpm", "wavelength"]:
+        try:
+            rootmetadata[k] = hfile["/how"].attrs[k]
+        except KeyError:
+            pass
 
     return rootmetadata
 
