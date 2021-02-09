@@ -11,6 +11,7 @@ Natively reading ODIM H5 radar files in Python.
     :toctree: generated/
 
     _to_str
+    buffer
     field_metadata
     cartesian_to_geographic
     radar_coordinates_to_xyz
