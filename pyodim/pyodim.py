@@ -23,6 +23,7 @@ Natively reading ODIM H5 radar files in Python.
     read_odim
 """
 import datetime
+from typing import Dict, List, Tuple
 
 import dask
 import h5py
@@ -32,14 +33,14 @@ import numpy as np
 import xarray as xr
 
 
-def _to_str(t):
+def _to_str(t) -> str:
     """
     Transform binary into string.
     """
     return t.decode("utf-8")
 
 
-def field_metadata(quantity_name):
+def field_metadata(quantity_name: str) -> Dict:
     """
     Populate metadata for common fields using Py-ART get_metadata() function.
     (Optionnal).
@@ -90,7 +91,7 @@ def field_metadata(quantity_name):
     return attrs
 
 
-def cartesian_to_geographic(x, y, lon0, lat0):
+def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: float) -> Tuple[np.ndarray, np.ndarray]:
     """
     Transform cartesian coordinates to lat/lon using the Azimuth Equidistant
     projection.
@@ -119,7 +120,7 @@ def cartesian_to_geographic(x, y, lon0, lat0):
     return lon, lat
 
 
-def radar_coordinates_to_xyz(r, azimuth, elevation):
+def radar_coordinates_to_xyz(r: np.ndarray, azimuth: np.ndarray, elevation: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Transform radar coordinates to cartesian coordinates.
 
@@ -154,7 +155,7 @@ def radar_coordinates_to_xyz(r, azimuth, elevation):
     return x, y, z
 
 
-def generate_timestamp(stime, etime, nrays, a1gate):
+def generate_timestamp(stime: str, etime: str, nrays: int, a1gate: int) -> np.ndarray:
     """
     Generate timestamp for each ray.
 
@@ -181,7 +182,7 @@ def generate_timestamp(stime, etime, nrays, a1gate):
     return np.roll(trange, a1gate)
 
 
-def get_root_metadata(hfile):
+def get_root_metadata(hfile) -> Dict:
     """
     Get the metadata at the root of the ODIM H5 file.
 
@@ -243,7 +244,7 @@ def get_root_metadata(hfile):
     return rootmetadata
 
 
-def coord_from_metadata(metadata):
+def coord_from_metadata(metadata: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Create the radar coordinates from the ODIM H5 metadata specification.
 
@@ -275,7 +276,7 @@ def coord_from_metadata(metadata):
     return r, azimuth, elev
 
 
-def get_dataset_metadata(hfile, dataset="dataset1"):
+def get_dataset_metadata(hfile, dataset: str="dataset1") -> Tuple[Dict, Dict]:
     """
     Get the dataset metadata of the ODIM H5 file.
 
@@ -327,7 +328,7 @@ def get_dataset_metadata(hfile, dataset="dataset1"):
     return metadata, coordinates_metadata
 
 
-def check_nyquist(dset):
+def check_nyquist(dset) -> None:
     """
     Check if the dataset Nyquist velocity corresponds to the PRF information.
     """
@@ -339,7 +340,7 @@ def check_nyquist(dset):
     assert np.abs(nyquist - ny_int) < 0.5, "Nyquist not consistent with PRF"
 
 
-def read_odim_slice(odim_file, nslice=0, include_fields=[], exclude_fields=[]):
+def read_odim_slice(odim_file: str, nslice: int=0, include_fields: List=[], exclude_fields: List=[]):
     """
     Read into an xarray dataset one sweep of the ODIM file.
 
@@ -434,7 +435,7 @@ def read_odim_slice(odim_file, nslice=0, include_fields=[], exclude_fields=[]):
     return dataset
 
 
-def read_odim(odim_file, lazy_load=True, **kwargs):
+def read_odim(odim_file: str, lazy_load: bool=True, **kwargs) -> List:
     """
     Read an ODIM H5 file.
 
