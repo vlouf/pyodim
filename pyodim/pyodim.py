@@ -1,3 +1,27 @@
+"""
+Natively reading ODIM H5 radar files in Python.
+
+@title: pyodim
+@author: Valentin Louf <valentin.louf@bom.gov.au>
+@institutions: Bureau of Meteorology and Monash University.
+@creation: 21/01/2020
+@date: 09/02/2021
+
+.. autosummary::
+    :toctree: generated/
+
+    _to_str
+    field_metadata
+    cartesian_to_geographic
+    radar_coordinates_to_xyz
+    generate_timestamp
+    get_root_metadata
+    coord_from_metadata
+    get_dataset_metadata
+    check_nyquist
+    read_odim_slice
+    read_odim
+"""
 import datetime
 
 import dask
