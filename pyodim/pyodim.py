@@ -120,7 +120,9 @@ def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: flo
     return lon, lat
 
 
-def radar_coordinates_to_xyz(r: np.ndarray, azimuth: np.ndarray, elevation: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def radar_coordinates_to_xyz(
+    r: np.ndarray, azimuth: np.ndarray, elevation: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Transform radar coordinates to cartesian coordinates.
 
@@ -276,7 +278,7 @@ def coord_from_metadata(metadata: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndar
     return r, azimuth, elev
 
 
-def get_dataset_metadata(hfile, dataset: str="dataset1") -> Tuple[Dict, Dict]:
+def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     """
     Get the dataset metadata of the ODIM H5 file.
 
@@ -340,7 +342,7 @@ def check_nyquist(dset) -> None:
     assert np.abs(nyquist - ny_int) < 0.5, "Nyquist not consistent with PRF"
 
 
-def read_odim_slice(odim_file: str, nslice: int=0, include_fields: List=[], exclude_fields: List=[]):
+def read_odim_slice(odim_file: str, nslice: int = 0, include_fields: List = [], exclude_fields: List = []):
     """
     Read into an xarray dataset one sweep of the ODIM file.
 
@@ -435,7 +437,7 @@ def read_odim_slice(odim_file: str, nslice: int=0, include_fields: List=[], excl
     return dataset
 
 
-def read_odim(odim_file: str, lazy_load: bool=True, **kwargs) -> List:
+def read_odim(odim_file: str, lazy_load: bool = True, **kwargs) -> List:
     """
     Read an ODIM H5 file.
 
