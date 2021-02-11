@@ -35,7 +35,7 @@ import numpy as np
 import xarray as xr
 
 
-def _to_str(t) -> str:
+def _to_str(t: bytes) -> str:
     """
     Transform binary into string.
     """
@@ -89,7 +89,7 @@ def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: flo
 
 
 @buffer
-def check_nyquist(dset) -> None:
+def check_nyquist(dset: xr.Dataset) -> None:
     """
     Check if the dataset Nyquist velocity corresponds to the PRF information.
     """
@@ -344,7 +344,7 @@ def radar_coordinates_to_xyz(
 
 
 def read_odim_slice(
-    odim_file: str, nslice: int = 0, include_fields: List = [], exclude_fields: List = []
+    odim_file: str, nslice: int = 0, include_fields: List = [], exclude_fields: List = [], check_NI: bool = False
 ) -> xr.Dataset:
     """
     Read into an xarray dataset one sweep of the ODIM file.
@@ -359,6 +359,8 @@ def read_odim_slice(
         Specific fields to be exclusively read.
     exclude_fields: list
         Specific fields to be excluded from reading.
+    check_NI: bool
+        Check NI parameter in ODIM file and compare it to the PRF.
 
     Returns:
     ========
@@ -390,11 +392,12 @@ def read_odim_slice(
         dataset = xr.Dataset()
         dataset.attrs = get_root_metadata(hfile)
         dataset.attrs.update(metadata)
-        try:
-            check_nyquist(dataset)
-        except AssertionError:
-            print("Nyquist not consistent with PRF")
-            pass
+        if check_NI:
+            try:
+                check_nyquist(dataset)
+            except AssertionError:
+                print("Nyquist not consistent with PRF")
+                pass
 
         for datakey in hfile[f"/{rootkey}"].keys():
             if not datakey.startswith("data"):
