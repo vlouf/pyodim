@@ -302,7 +302,11 @@ def get_root_metadata(hfile) -> Dict:
             rootmetadata[k] = hfile["/how"].attrs[k]
         except KeyError:
             pass
-    rootmetadata["copyright"] = _to_str(hfile["/how"].attrs["copyright"])
+
+    try:
+        rootmetadata["copyright"] = _to_str(hfile["/how"].attrs["copyright"])
+    except KeyError:
+        pass
 
     return rootmetadata
 
