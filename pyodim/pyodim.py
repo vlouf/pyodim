@@ -5,7 +5,7 @@ Natively reading ODIM H5 radar files in Python.
 @author: Valentin Louf <valentin.louf@bom.gov.au>
 @institutions: Bureau of Meteorology and Monash University.
 @creation: 21/01/2020
-@date: 09/02/2021
+@date: 19/02/2021
 
 .. autosummary::
     :toctree: generated/
@@ -297,11 +297,12 @@ def get_root_metadata(hfile) -> Dict:
             pass
 
     # How
-    for k in ["beamwH", "beamwV", "copyright", "rpm", "wavelength"]:
+    for k in ["beamwH", "beamwV", "rpm", "wavelength"]:
         try:
             rootmetadata[k] = hfile["/how"].attrs[k]
         except KeyError:
             pass
+    rootmetadata["copyright"] = _to_str(hfile["/how"].attrs["copyright"])
 
     return rootmetadata
 
