@@ -416,6 +416,8 @@ def read_odim_slice_h5(
 
     # Retrieve dataset metadata and coordinates metadata.
     metadata, coordinates_metadata = get_dataset_metadata(hfile, rootkey)
+    metadata["id"] = rootkey
+    metadata["data_count"] = len([k for k in hfile[rootkey].keys() if k.startswith("data")])
 
     dataset = xr.Dataset()
     dataset.attrs = get_root_metadata(hfile)
@@ -446,6 +448,7 @@ def read_odim_slice_h5(
         data_value = gain * np.ma.masked_equal(data_value, nodata) + offset
         dataset = dataset.merge({name: (("azimuth", "range"), data_value)})
         dataset[name].attrs = field_metadata(name)
+        dataset[name].attrs["id"] = datakey
 
     time = generate_timestamp(
         metadata["start_time"], metadata["end_time"], coordinates_metadata["nrays"], coordinates_metadata["a1gate"]
