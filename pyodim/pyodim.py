@@ -349,7 +349,12 @@ def radar_coordinates_to_xyz(
 
 
 def read_odim_slice(
-    odim_file: str, nslice: int = 0, include_fields: List = [], exclude_fields: List = [], check_NI: bool = False
+        odim_file: str,
+        nslice: int = 0,
+        include_fields: List = [],
+        exclude_fields: List = [],
+        check_NI: bool = False,
+        readwrite: bool = False,
 ) -> xr.Dataset:
     """
     Read into an xarray dataset one sweep of the ODIM file.
@@ -366,63 +371,81 @@ def read_odim_slice(
         Specific fields to be excluded from reading.
     check_NI: bool
         Check NI parameter in ODIM file and compare it to the PRF.
+    readwrite: write back to original file if True
 
     Returns:
     ========
     dataset: xarray.Dataset
         xarray dataset of one sweep of the ODIM file.
     """
+    rw_mode = "r+" if readwrite else "r"
+    with h5py.File(odim_file, rw_mode) as hfile:
+        return read_odim_slice_h5(
+            hfile,
+            nslice=nslice,
+            include_fields=include_fields,
+            exclude_fields=exclude_fields,
+            check_NI=check_NI,
+            readwrite=readwrite)
+
+def read_odim_slice_h5(
+        hfile: str,
+        nslice: int = 0,
+        include_fields: List = [],
+        exclude_fields: List = [],
+        check_NI: bool = False,
+        readwrite: bool = False,
+) -> xr.Dataset:
     # if nslice == 0:
     #     raise ValueError('Slice numbering start at 1.')
     if type(include_fields) is not list:
         raise TypeError("Argument `include_fields` should be a list")
 
-    with h5py.File(odim_file, "r") as hfile:
-        # Number of sweep in dataset
-        nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
-        assert nslice <= nsweep, f"Wrong slice number asked. Only {nsweep} available."
+    # Number of sweep in dataset
+    nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
+    assert nslice <= nsweep, f"Wrong slice number asked. Only {nsweep} available."
 
-        # Order datasets by increasing elevations.
-        sweeps = dict()
-        for key in hfile["/"].keys():
-            if key.startswith("dataset"):
-                sweeps[key] = hfile[f"/{key}/where"].attrs["elangle"]
+    # Order datasets by increasing elevations.
+    sweeps = dict()
+    for key in hfile["/"].keys():
+        if key.startswith("dataset"):
+            sweeps[key] = hfile[f"/{key}/where"].attrs["elangle"]
 
-        sorted_keys = sorted(sweeps, key=lambda k: sweeps[k])
-        rootkey = sorted_keys[nslice]
+    sorted_keys = sorted(sweeps, key=lambda k: sweeps[k])
+    rootkey = sorted_keys[nslice]
 
-        # Retrieve dataset metadata and coordinates metadata.
-        metadata, coordinates_metadata = get_dataset_metadata(hfile, rootkey)
+    # Retrieve dataset metadata and coordinates metadata.
+    metadata, coordinates_metadata = get_dataset_metadata(hfile, rootkey)
 
-        dataset = xr.Dataset()
-        dataset.attrs = get_root_metadata(hfile)
-        dataset.attrs.update(metadata)
-        if check_NI:
-            try:
-                check_nyquist(dataset)
-            except AssertionError:
-                print("Nyquist not consistent with PRF")
-                pass
+    dataset = xr.Dataset()
+    dataset.attrs = get_root_metadata(hfile)
+    dataset.attrs.update(metadata)
+    if check_NI:
+        try:
+            check_nyquist(dataset)
+        except AssertionError:
+            print("Nyquist not consistent with PRF")
+            pass
 
-        for datakey in hfile[f"/{rootkey}"].keys():
-            if not datakey.startswith("data"):
+    for datakey in hfile[f"/{rootkey}"].keys():
+        if not datakey.startswith("data"):
+            continue
+
+        gain = hfile[f"/{rootkey}/{datakey}/what"].attrs["gain"]
+        nodata = hfile[f"/{rootkey}/{datakey}/what"].attrs["nodata"]
+        offset = hfile[f"/{rootkey}/{datakey}/what"].attrs["offset"]
+        name = _to_str(hfile[f"/{rootkey}/{datakey}/what"].attrs["quantity"])
+        # Check if field should be read.
+        if len(include_fields) > 0:
+            if name not in include_fields:
                 continue
+        if name in exclude_fields:
+            continue
 
-            gain = hfile[f"/{rootkey}/{datakey}/what"].attrs["gain"]
-            nodata = hfile[f"/{rootkey}/{datakey}/what"].attrs["nodata"]
-            offset = hfile[f"/{rootkey}/{datakey}/what"].attrs["offset"]
-            name = _to_str(hfile[f"/{rootkey}/{datakey}/what"].attrs["quantity"])
-            # Check if field should be read.
-            if len(include_fields) > 0:
-                if name not in include_fields:
-                    continue
-            if name in exclude_fields:
-                continue
-
-            data_value = hfile[f"/{rootkey}/{datakey}/data"][:].astype(np.float32)
-            data_value = gain * np.ma.masked_equal(data_value, nodata) + offset
-            dataset = dataset.merge({name: (("azimuth", "range"), data_value)})
-            dataset[name].attrs = field_metadata(name)
+        data_value = hfile[f"/{rootkey}/{datakey}/data"][:].astype(np.float32)
+        data_value = gain * np.ma.masked_equal(data_value, nodata) + offset
+        dataset = dataset.merge({name: (("azimuth", "range"), data_value)})
+        dataset[name].attrs = field_metadata(name)
 
     time = generate_timestamp(
         metadata["start_time"], metadata["end_time"], coordinates_metadata["nrays"], coordinates_metadata["a1gate"]
@@ -448,7 +471,12 @@ def read_odim_slice(
     return dataset
 
 
-def read_odim(odim_file: str, lazy_load: bool = True, **kwargs) -> List:
+def read_odim(
+        odim_file: str,
+        lazy_load: bool = True,
+        readwrite: bool = False,
+        **kwargs,
+) -> List:
     """
     Read an ODIM H5 file.
 
@@ -470,15 +498,21 @@ def read_odim(odim_file: str, lazy_load: bool = True, **kwargs) -> List:
         List of xarray datasets, each item in a the list is one sweep of the
         radar data (ordered from lowest elevation scan to highest).
     """
-    with h5py.File(odim_file, "r") as hfile:
-        nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
+
+    rw_mode = "r+" if readwrite else "r"
+    try:
+        hfile = h5py.File(odim_file, rw_mode)
+    except Exception as e:
+        return None
+
+    nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
 
     radar = []
     for sweep in range(0, nsweep):
-        c = dask.delayed(read_odim_slice)(odim_file, sweep, **kwargs)
+        c = dask.delayed(read_odim_slice_h5)(hfile, sweep, **kwargs)
         radar.append(c)
 
     if not lazy_load:
         radar = [r.compute() for r in radar]
 
-    return radar
+    return (radar, hfile)
