@@ -405,7 +405,8 @@ def read_odim_slice_h5(
     sweeps = dict()
     for key in hfile["/"].keys():
         if key.startswith("dataset"):
-            sweeps[key] = hfile[f"/{key}/where"].attrs["elangle"]
+            sweeps[key] = (hfile[f"/{key}/where"].attrs["elangle"],
+                           hfile[f"/{key}/what"].attrs["starttime"])
 
     sorted_keys = sorted(sweeps, key=lambda k: sweeps[k])
     rootkey = sorted_keys[nslice]
