@@ -405,11 +405,12 @@ def read_odim_slice_h5(
     nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
     assert nslice <= nsweep, f"Wrong slice number asked. Only {nsweep} available."
 
-    # Order datasets by increasing elevations.
+    # Order datasets by increasing elevations, and time
     sweeps = dict()
     for key in hfile["/"].keys():
         if key.startswith("dataset"):
-            sweeps[key] = hfile[f"/{key}/where"].attrs["elangle"]
+            sweeps[key] = (hfile[f"/{key}/where"].attrs["elangle"],
+                           hfile[f"/{key}/what"].attrs["starttime"])
 
     sorted_keys = sorted(sweeps, key=lambda k: sweeps[k])
     rootkey = sorted_keys[nslice]
