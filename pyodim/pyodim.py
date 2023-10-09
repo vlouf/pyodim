@@ -475,10 +475,38 @@ def read_odim_slice_h5(
     return dataset
 
 
-def read_odim(
+def read_write_odim(
         odim_file: str,
         lazy_load: bool = True,
         readwrite: bool = False,
+        **kwargs,
+):
+    """Read an ODIM H5 file and return h5py handle.
+
+    @param readwrite: open in read-write mode if True.
+    @see read_odim().
+    """
+    rw_mode = "r+" if readwrite else "r"
+    try:
+        hfile = h5py.File(odim_file, rw_mode)
+    except Exception as e:
+        return None
+
+    nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
+
+    radar = []
+    for sweep in range(0, nsweep):
+        c = dask.delayed(read_odim_slice_h5)(hfile, sweep, **kwargs)
+        radar.append(c)
+
+    if not lazy_load:
+        radar = [r.compute() for r in radar]
+
+    return (radar, hfile)
+
+def read_odim(
+        odim_file: str,
+        lazy_load: bool = True,
         **kwargs,
 ) -> List:
     """
@@ -502,21 +530,5 @@ def read_odim(
         List of xarray datasets, each item in a the list is one sweep of the
         radar data (ordered from lowest elevation scan to highest).
     """
-
-    rw_mode = "r+" if readwrite else "r"
-    try:
-        hfile = h5py.File(odim_file, rw_mode)
-    except Exception as e:
-        return None
-
-    nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
-
-    radar = []
-    for sweep in range(0, nsweep):
-        c = dask.delayed(read_odim_slice_h5)(hfile, sweep, **kwargs)
-        radar.append(c)
-
-    if not lazy_load:
-        radar = [r.compute() for r in radar]
-
-    return (radar, hfile)
+    (radar, _) = read_write_odim(odim_file, lazy_load=lazy_load, **kwargs)
+    return radar
