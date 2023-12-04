@@ -478,14 +478,12 @@ def read_odim_slice_h5(
 def read_write_odim(
         odim_file: str,
         lazy_load: bool = True,
-        always_dask: bool = True,
         readwrite: bool = False,
         **kwargs,
 ):
     """Read an ODIM H5 file and return h5py handle.
 
     @param lazy_load: lazy-load the radar dataset.
-    @param always_dask: use dask even when not lazy-loading.
     @param readwrite: open in read-write mode if True.
     @see read_odim().
     """
@@ -498,17 +496,6 @@ def read_write_odim(
     nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
 
     radar = []
-
-    # effectively three loading modes:
-    # - lazy (dask)
-    # - immediate (dask)
-    # - immediate (standard)
-
-    if not lazy_load and not always_dask:
-        for sweep in range(0, nsweep):
-            radar.append(read_odim_slice_h5(hfile, sweep, **kwargs))
-        return (radar, hfile)
-
     for sweep in range(0, nsweep):
         c = dask.delayed(read_odim_slice_h5)(hfile, sweep, **kwargs)
         radar.append(c)
@@ -521,7 +508,6 @@ def read_write_odim(
 def read_odim(
         odim_file: str,
         lazy_load: bool = True,
-        always_dask: bool = True,
         **kwargs,
 ) -> List:
     """
@@ -534,8 +520,6 @@ def read_odim(
     lazy_load: bool
         Lazily load the data if true, read and load in memory the entire dataset
         if false.
-    always_dask: bool
-        Use dask even when not lazy-loading.
     include_fields: list
         Specific fields to be exclusively read.
     exclude_fields: list
@@ -547,5 +531,5 @@ def read_odim(
         List of xarray datasets, each item in a the list is one sweep of the
         radar data (ordered from lowest elevation scan to highest).
     """
-    (radar, _) = read_write_odim(odim_file, lazy_load=lazy_load, always_dask=always_dask, **kwargs)
+    (radar, _) = read_write_odim(odim_file, lazy_load=lazy_load, **kwargs)
     return radar
