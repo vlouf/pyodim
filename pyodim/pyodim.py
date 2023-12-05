@@ -231,12 +231,13 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     """
     metadata = dict()
     coordinates_metadata = dict()
+
+    # NB: do not try/except KeyError for h5py attrs: it leaks [h5py issue 2350]
+
     # General metadata
-    for k in ["NI", "highprf", "product"]:
-        try:
-            metadata[k] = hfile[f"/{dataset}/how"].attrs[k]
-        except Exception:
-            pass
+    ds_how = hfile[f"/{dataset}/how"]
+    for k in {"NI", "highprf", "product"} & ds_how.attrs.keys():
+        metadata[k] = ds_how.attrs[k]
 
     sdate = _to_str(hfile[f"/{dataset}/what"].attrs["startdate"])
     stime = _to_str(hfile[f"/{dataset}/what"].attrs["starttime"])
@@ -246,9 +247,9 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     metadata["end_time"] = f"{edate}_{etime}"
 
     # Coordinates:
-    try:
-        coordinates_metadata["astart"] = hfile[f"/{dataset}/how"].attrs["astart"]
-    except KeyError:
+    if 'astart' in ds_how.attrs:
+        coordinates_metadata["astart"] = ds_how.attrs["astart"]
+    else:
         # Optional coordinates (!).
         coordinates_metadata["astart"] = 0
     coordinates_metadata["a1gate"] = hfile[f"/{dataset}/where"].attrs["a1gate"]
@@ -278,6 +279,9 @@ def get_root_metadata(hfile) -> Dict:
         Metadata at the root of the ODIM H5 file.
     """
     rootmetadata = {}
+
+    # NB: do not try/except KeyError for h5py attrs: it leaks [h5py issue 2350]
+
     # Root
     rootmetadata["Conventions"] = _to_str(hfile.attrs["Conventions"])
 
@@ -290,23 +294,15 @@ def get_root_metadata(hfile) -> Dict:
     sdate = _to_str(hfile["/what"].attrs["date"])
     stime = _to_str(hfile["/what"].attrs["time"])
     rootmetadata["date"] = datetime.datetime.strptime(sdate + stime, "%Y%m%d%H%M%S").isoformat()
-    for k in ["object", "source", "version"]:
-        try:
-            rootmetadata[k] = _to_str(hfile["/what"].attrs[k])
-        except KeyError:
-            pass
+    for k in {"object", "source", "version"} & hfile["/what"].attrs.keys():
+        rootmetadata[k] = _to_str(hfile["/what"].attrs[k])
 
     # How
-    for k in ["beamwH", "beamwV", "rpm", "wavelength"]:
-        try:
-            rootmetadata[k] = hfile["/how"].attrs[k]
-        except KeyError:
-            pass
+    for k in {"beamwH", "beamwV", "rpm", "wavelength"} & hfile["/how"].attrs.keys():
+        rootmetadata[k] = hfile["/how"].attrs[k]
 
-    try:
+    if "copyright" in hfile["/how"].attrs:
         rootmetadata["copyright"] = _to_str(hfile["/how"].attrs["copyright"])
-    except KeyError:
-        pass
 
     return rootmetadata
 
@@ -389,7 +385,7 @@ def read_odim_slice(
             readwrite=readwrite)
 
 def read_odim_slice_h5(
-        hfile: str,
+        hfile: h5py.File,
         nslice: int = 0,
         include_fields: List = [],
         exclude_fields: List = [],
