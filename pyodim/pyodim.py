@@ -447,8 +447,7 @@ def read_odim_slice_h5(
 
         data_value = hfile[f"/{rootkey}/{datakey}/data"][:].astype(np.float32)
         data_value = gain * np.ma.masked_equal(data_value, nodata) + offset
-        # NB: copy() arrays to avoid memory leak with some libhdf5 versions
-        dataset = dataset.merge({name: (("azimuth", "range"), data_value.copy())})
+        dataset = dataset.merge({name: (("azimuth", "range"), data_value)})
         dataset[name].attrs = field_metadata(name)
         dataset[name].attrs["id"] = datakey
 
@@ -459,18 +458,17 @@ def read_odim_slice_h5(
     x, y, z = radar_coordinates_to_xyz(r, azi, elev)
     longitude, latitude = cartesian_to_geographic(x, y, dataset.attrs["longitude"], dataset.attrs["latitude"])
 
-    # NB: copy() arrays to avoid unclosed hfile and memory leak with some libhdf5 versions
     dataset = dataset.merge(
         {
             "range": (("range"), r),
             "azimuth": (("azimuth"), azi),
             "elevation": (("elevation"), elev),
-            "time": (("time"), time.copy()),
-            "x": (("azimuth", "range"), x.copy()),
-            "y": (("azimuth", "range"), y.copy()),
-            "z": (("azimuth", "range"), (z + dataset.attrs["height"]).copy()),
-            "longitude": (("azimuth", "range"), longitude.copy()),
-            "latitude": (("azimuth", "range"), latitude.copy()),
+            "time": (("time"), time),
+            "x": (("azimuth", "range"), x),
+            "y": (("azimuth", "range"), y),
+            "z": (("azimuth", "range"), z + dataset.attrs["height"]),
+            "longitude": (("azimuth", "range"), longitude),
+            "latitude": (("azimuth", "range"), latitude),
         }
     )
 
