@@ -350,7 +350,7 @@ def read_odim_slice(
         include_fields: List = [],
         exclude_fields: List = [],
         check_NI: bool = False,
-        readwrite: bool = False,
+        read_write: bool = False,
 ) -> xr.Dataset:
     """
     Read into an xarray dataset one sweep of the ODIM file.
@@ -367,14 +367,14 @@ def read_odim_slice(
         Specific fields to be excluded from reading.
     check_NI: bool
         Check NI parameter in ODIM file and compare it to the PRF.
-    readwrite: write back to original file if True
+    read_write: open in read-write mode if True
 
     Returns:
     ========
     dataset: xarray.Dataset
         xarray dataset of one sweep of the ODIM file.
     """
-    rw_mode = "r+" if readwrite else "r"
+    rw_mode = "r+" if read_write else "r"
     with h5py.File(odim_file, rw_mode) as hfile:
         return read_odim_slice_h5(
             hfile,
@@ -382,7 +382,7 @@ def read_odim_slice(
             include_fields=include_fields,
             exclude_fields=exclude_fields,
             check_NI=check_NI,
-            readwrite=readwrite)
+            read_write=read_write)
 
 def read_odim_slice_h5(
         hfile: h5py.File,
@@ -390,7 +390,7 @@ def read_odim_slice_h5(
         include_fields: List = [],
         exclude_fields: List = [],
         check_NI: bool = False,
-        readwrite: bool = False,
+        read_write: bool = False,
 ) -> xr.Dataset:
     # if nslice == 0:
     #     raise ValueError('Slice numbering start at 1.')
@@ -474,16 +474,16 @@ def read_odim_slice_h5(
 def read_write_odim(
         odim_file: str,
         lazy_load: bool = True,
-        readwrite: bool = False,
+        read_write: bool = False,
         **kwargs,
 ):
     """Read an ODIM H5 file and return h5py handle.
 
     @param lazy_load: lazy-load the radar dataset.
-    @param readwrite: open in read-write mode if True.
+    @param read_write: open in read-write mode if True.
     @see read_odim().
     """
-    rw_mode = "r+" if readwrite else "r"
+    rw_mode = "r+" if read_write else "r"
     try:
         hfile = h5py.File(odim_file, rw_mode)
     except Exception as e:
