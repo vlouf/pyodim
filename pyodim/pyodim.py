@@ -401,7 +401,7 @@ def read_odim_slice_h5(
     nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
     assert nslice <= nsweep, f"Wrong slice number asked. Only {nsweep} available."
 
-    # Order datasets by increasing elevations.
+    # Order datasets by increasing elevation and time
     sweeps = dict()
     for key in hfile["/"].keys():
         if key.startswith("dataset"):
@@ -412,6 +412,8 @@ def read_odim_slice_h5(
 
     # Retrieve dataset metadata and coordinates metadata.
     metadata, coordinates_metadata = get_dataset_metadata(hfile, rootkey)
+    # remember tilt id
+    metadata["id"] = rootkey
 
     dataset = xr.Dataset()
     dataset.attrs = get_root_metadata(hfile)
@@ -442,6 +444,8 @@ def read_odim_slice_h5(
         data_value = gain * np.ma.masked_equal(data_value, nodata) + offset
         dataset = dataset.merge({name: (("azimuth", "range"), data_value)})
         dataset[name].attrs = field_metadata(name)
+        # remember dataset id
+        dataset[name].attrs["id"] = datakey
 
     time = generate_timestamp(
         metadata["start_time"], metadata["end_time"], coordinates_metadata["nrays"], coordinates_metadata["a1gate"]
@@ -524,3 +528,50 @@ def read_odim(
     """
     (radar, _) = read_write_odim(odim_file, lazy_load=lazy_load, **kwargs)
     return radar
+
+def odim_str_type_id(text_bytes):
+    """Generate ODIM-conformant h5py string type ID for `text_bytes`."""
+    # h5py default string type is STRPAD STR_NULLPAD
+    # ODIM spec string type is STRPAD STR_NULLTERM
+    type_id = h5py.h5t.TypeID.copy(h5py.h5t.C_S1)
+    type_id.set_strpad(h5py.h5t.STR_NULLTERM)
+    type_id.set_size(len(text_bytes) + 1)
+    return type_id
+
+def write_odim_str_attrib(group, attrib_name: str, text: str):
+    """Write ODIM-conformant h5py string attribute.
+
+    @param group: h5py group
+    @param attrib_name: attribute name
+    @param text: attribute value
+    """
+    if attrib_name in group.attrs:
+        del group.attrs[attrib_name]
+
+    group_id = group.id
+    text_bytes = text.encode('utf-8')
+    type_id = odim_str_type_id(text_bytes)
+    space = h5py.h5s.create(h5py.h5s.SCALAR)
+    att_id = h5py.h5a.create(group_id, attrib_name.encode('utf-8'), type_id, space)
+    text_array = np.array(text_bytes)
+    att_id.write(text_array)
+
+def copy_h5_data(h5_tilt, orig_id: str):
+    """Add a data array to `h5_tilt` by copying data with `orig_id`.
+
+    @param h5_tilt: h5py sweep we're adding to.
+    @param orig_id: id of original data.
+
+    @return id of new data.
+    """
+    # current data_count
+    data_count = len([k for k in h5_tilt.keys() if k.startswith("data")])
+
+    # use data_count for data_id
+    data_id = f"data{data_count + 1}"
+
+    # duplicate original
+    h5_tilt.copy(orig_id, data_id)
+
+    # return id
+    return data_id
