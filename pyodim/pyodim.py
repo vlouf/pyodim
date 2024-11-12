@@ -9,8 +9,7 @@ Natively reading ODIM H5 radar files in Python.
 
 .. autosummary::
     :toctree: generated/
-
-    _to_str
+    
     buffer
     cartesian_to_geographic
     check_nyquist
@@ -34,13 +33,6 @@ import pyproj
 import pandas as pd
 import numpy as np
 import xarray as xr
-
-
-def _to_str(t: bytes) -> str:
-    """
-    Transform binary into string.
-    """
-    return t.decode("utf-8")
 
 
 def buffer(func):
@@ -284,10 +276,10 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     for k in {"NI", "highprf", "product"} & ds_how.attrs.keys():
         metadata[k] = ds_how.attrs[k]
 
-    sdate = _to_str(hfile[f"/{dataset}/what"].attrs["startdate"])
-    stime = _to_str(hfile[f"/{dataset}/what"].attrs["starttime"])
-    edate = _to_str(hfile[f"/{dataset}/what"].attrs["enddate"])
-    etime = _to_str(hfile[f"/{dataset}/what"].attrs["endtime"])
+    sdate = hfile[f"/{dataset}/what"].attrs["startdate"].decode("utf-8")
+    stime = hfile[f"/{dataset}/what"].attrs["starttime"].decode("utf-8")
+    edate = hfile[f"/{dataset}/what"].attrs["enddate"].decode("utf-8")
+    etime = hfile[f"/{dataset}/what"].attrs["endtime"].decode("utf-8")
     metadata["start_time"] = f"{sdate}_{stime}"
     metadata["end_time"] = f"{edate}_{etime}"
 
@@ -328,7 +320,7 @@ def get_root_metadata(hfile) -> Dict:
     # NB: do not try/except KeyError for h5py attrs: it leaks [h5py issue 2350]
 
     # Root
-    rootmetadata["Conventions"] = _to_str(hfile.attrs["Conventions"])
+    rootmetadata["Conventions"] = hfile.attrs["Conventions"].decode("utf-8")
 
     # Where
     rootmetadata["latitude"] = hfile["/where"].attrs["lat"]
@@ -336,18 +328,18 @@ def get_root_metadata(hfile) -> Dict:
     rootmetadata["height"] = hfile["/where"].attrs["height"]
 
     # What
-    sdate = _to_str(hfile["/what"].attrs["date"])
-    stime = _to_str(hfile["/what"].attrs["time"])
+    sdate = hfile["/what"].attrs["date"].decode("utf-8")
+    stime = hfile["/what"].attrs["time"].decode("utf-8")
     rootmetadata["date"] = datetime.datetime.strptime(sdate + stime, "%Y%m%d%H%M%S").isoformat()
     for k in {"object", "source", "version"} & hfile["/what"].attrs.keys():
-        rootmetadata[k] = _to_str(hfile["/what"].attrs[k])
+        rootmetadata[k] = hfile["/what"].attrs[k].decode("utf-8")
 
     # How
     for k in {"beamwH", "beamwV", "rpm", "wavelength"} & hfile["/how"].attrs.keys():
         rootmetadata[k] = hfile["/how"].attrs[k]
 
     if "copyright" in hfile["/how"].attrs:
-        rootmetadata["copyright"] = _to_str(hfile["/how"].attrs["copyright"])
+        rootmetadata["copyright"] = hfile["/how"].attrs["copyright"].decode("utf-8")
 
     return rootmetadata
 
@@ -479,7 +471,7 @@ def read_odim_slice_h5(
         gain = hfile[f"/{rootkey}/{datakey}/what"].attrs["gain"]
         nodata = hfile[f"/{rootkey}/{datakey}/what"].attrs["nodata"]
         offset = hfile[f"/{rootkey}/{datakey}/what"].attrs["offset"]
-        name = _to_str(hfile[f"/{rootkey}/{datakey}/what"].attrs["quantity"])
+        name = hfile[f"/{rootkey}/{datakey}/what"].attrs["quantity"].decode("utf-8")
         # Check if field should be read.
         if len(include_fields) > 0:
             if name not in include_fields:
