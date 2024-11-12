@@ -13,8 +13,9 @@ jobs:
     strategy:
       matrix:
         python-version: [3.9, 3.12]
-        numpy-version: ["1.20", "1.24", "2.0", "2.1"]  # Add numpy versions you want to test
-        h5py-version: ["2.9.0", "3.7.0", "3.11.0"]  # Add h5py versions you want to test
+        numpy-version: ["1.24", "2.1"]
+        h5py-version: ["3.0.0", "3.11.0"]
+        xarray-version: ["0.18", "2024.9.0"]
 
     steps:
       # Step 1: Check out the repository code
