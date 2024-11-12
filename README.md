@@ -41,4 +41,4 @@ print(dataset)
 - `check_NI` (bool, optional): Check Nyquist parameter consistency (default is False).
 - `read_write` (bool, optional): Open in read-write mode if True.
 
-Feel free to contribute to pyodim by submitting issues or pull requests on GitLab.
+Feel free to contribute to pyodim by submitting issues or pull requests.
