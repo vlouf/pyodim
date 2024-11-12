@@ -5,7 +5,7 @@ Natively reading ODIM H5 radar files in Python.
 @author: Valentin Louf <valentin.louf@bom.gov.au>
 @institutions: Bureau of Meteorology and Monash University.
 @creation: 21/01/2020
-@date: 19/02/2021
+@date: 12/02/2024
 
 .. autosummary::
     :toctree: generated/
@@ -23,6 +23,7 @@ Natively reading ODIM H5 radar files in Python.
     read_odim_slice
     read_odim
 """
+
 import datetime
 import traceback
 from typing import Dict, List, Tuple
@@ -148,36 +149,80 @@ def field_metadata(quantity_name: str) -> Dict:
     attrs: dict()
         Metadata dictionnary.
     """
-    try:
-        from pyart.config import get_metadata
-    except Exception:
-        return {}
-    ODIM_H5_FIELD_NAMES = {
-        "TH": "total_power",  # uncorrected reflectivity, horizontal
-        "TV": "total_power",  # uncorrected reflectivity, vertical
-        "DBZH": "reflectivity",  # corrected reflectivity, horizontal
-        "DBZH_CLEAN": "reflectivity",  # corrected reflectivity, horizontal
-        "DBZV": "reflectivity",  # corrected reflectivity, vertical
-        "ZDR": "differential_reflectivity",  # differential reflectivity
-        "RHOHV": "cross_correlation_ratio",
-        "LDR": "linear_polarization_ratio",
-        "PHIDP": "differential_phase",
-        "KDP": "specific_differential_phase",
-        "SQI": "normalized_coherent_power",
-        "SNR": "signal_to_noise_ratio",
-        "SNRH": "signal_to_noise_ratio",
-        "VRAD": "velocity",  # radial velocity, marked for deprecation in ODIM HDF5 2.2
-        "VRADH": "velocity",  # radial velocity, horizontal polarisation
-        "VRADDH": "corrected_velocity",  # radial velocity, horizontal polarisation
-        "VRADV": "velocity",  # radial velocity, vertical polarisation
-        "WRAD": "spectrum_width",
-        "QIND": "quality_index",
+    metadata = {
+        "TH": {"units": "dBZ", "standard_name": "equivalent_reflectivity_factor", "long_name": "Total power"},
+        "TV": {"units": "dBZ", "standard_name": "equivalent_reflectivity_factor", "long_name": "Total power"},
+        "DBZH": {"units": "dBZ", "standard_name": "equivalent_reflectivity_factor", "long_name": "Reflectivity"},
+        "DBZH_CLEAN": {"units": "dBZ", "standard_name": "equivalent_reflectivity_factor", "long_name": "Reflectivity"},
+        "DBZV": {"units": "dBZ", "standard_name": "equivalent_reflectivity_factor", "long_name": "Reflectivity"},
+        "ZDR": {
+            "units": "dB",
+            "standard_name": "log_differential_reflectivity_hv",
+            "long_name": "Differential reflectivity",
+        },
+        "RHOHV": {
+            "units": "ratio",
+            "standard_name": "cross_correlation_ratio_hv",
+            "long_name": "Cross correlation ratio (RHOHV)",
+            "valid_max": 1.0,
+            "valid_min": 0.0,
+        },
+        "LDR": {
+            "units": "dB",
+            "standard_name": "log_linear_depolarization_ratio_hv",
+            "long_name": "Linear depolarization ratio",
+        },
+        "PHIDP": {
+            "units": "degrees",
+            "standard_name": "differential_phase_hv",
+            "long_name": "Differential phase (PhiDP)",
+            "valid_max": 180.0,
+            "valid_min": -180.0,
+        },
+        "KDP": {
+            "units": "degrees/km",
+            "standard_name": "specific_differential_phase_hv",
+            "long_name": "Specific differential phase (KDP)",
+        },
+        "SQI": {
+            "units": "ratio",
+            "standard_name": "normalized_coherent_power",
+            "long_name": "Normalized coherent power",
+            "valid_max": 1.0,
+            "valid_min": 0.0,
+            "comment": "Also know as signal quality index (SQI)",
+        },
+        "SNR": {"units": "dB", "standard_name": "signal_to_noise_ratio", "long_name": "Signal to noise ratio"},
+        "SNRH": {"units": "dB", "standard_name": "signal_to_noise_ratio", "long_name": "Signal to noise ratio"},
+        "VRAD": {
+            "units": "meters_per_second",
+            "standard_name": "radial_velocity",
+            "long_name": "Mean dopper velocity",
+        },
+        "VRADH": {
+            "units": "meters_per_second",
+            "standard_name": "radial_velocity",
+            "long_name": "Mean dopper velocity",
+        },
+        "VRADDH": {
+            "units": "meters_per_second",
+            "standard_name": "corrected_radial_velocity",
+            "long_name": "Corrected mean doppler velocity",
+        },
+        "VRADV": {
+            "units": "meters_per_second",
+            "standard_name": "radial_velocity",
+            "long_name": "Mean dopper velocity",
+        },
+        "WRAD": {
+            "units": "meters_per_second",
+            "standard_name": "doppler_spectrum_width",
+            "long_name": "Doppler spectrum width",
+        },
     }
 
     try:
-        fname = ODIM_H5_FIELD_NAMES[quantity_name]
-        attrs = get_metadata(fname)
-        attrs.pop("coordinates")
+        attrs = metadata[quantity_name]
     except KeyError:
         return {}
 
@@ -247,7 +292,7 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     metadata["end_time"] = f"{edate}_{etime}"
 
     # Coordinates:
-    if 'astart' in ds_how.attrs:
+    if "astart" in ds_how.attrs:
         coordinates_metadata["astart"] = ds_how.attrs["astart"]
     else:
         # Optional coordinates (!).
@@ -345,12 +390,12 @@ def radar_coordinates_to_xyz(
 
 
 def read_odim_slice(
-        odim_file: str,
-        nslice: int = 0,
-        include_fields: List = [],
-        exclude_fields: List = [],
-        check_NI: bool = False,
-        read_write: bool = False,
+    odim_file: str,
+    nslice: int = 0,
+    include_fields: List = [],
+    exclude_fields: List = [],
+    check_NI: bool = False,
+    read_write: bool = False,
 ) -> xr.Dataset:
     """
     Read into an xarray dataset one sweep of the ODIM file.
@@ -382,15 +427,17 @@ def read_odim_slice(
             include_fields=include_fields,
             exclude_fields=exclude_fields,
             check_NI=check_NI,
-            read_write=read_write)
+            read_write=read_write,
+        )
+
 
 def read_odim_slice_h5(
-        hfile: str,
-        nslice: int = 0,
-        include_fields: List = [],
-        exclude_fields: List = [],
-        check_NI: bool = False,
-        read_write: bool = False,
+    hfile: str,
+    nslice: int = 0,
+    include_fields: List = [],
+    exclude_fields: List = [],
+    check_NI: bool = False,
+    read_write: bool = False,
 ) -> xr.Dataset:
     # if nslice == 0:
     #     raise ValueError('Slice numbering start at 1.')
@@ -405,8 +452,7 @@ def read_odim_slice_h5(
     sweeps = dict()
     for key in hfile["/"].keys():
         if key.startswith("dataset"):
-            sweeps[key] = (hfile[f"/{key}/where"].attrs["elangle"],
-                           hfile[f"/{key}/what"].attrs["starttime"])
+            sweeps[key] = (hfile[f"/{key}/where"].attrs["elangle"], hfile[f"/{key}/what"].attrs["starttime"])
 
     sorted_keys = sorted(sweeps, key=lambda k: sweeps[k])
     rootkey = sorted_keys[nslice]
@@ -473,10 +519,10 @@ def read_odim_slice_h5(
 
 
 def read_write_odim(
-        odim_file: str,
-        lazy_load: bool = True,
-        read_write: bool = False,
-        **kwargs,
+    odim_file: str,
+    lazy_load: bool = True,
+    read_write: bool = False,
+    **kwargs,
 ):
     """Read an ODIM H5 file and return h5py handle.
 
@@ -501,10 +547,11 @@ def read_write_odim(
 
     return (radar, hfile)
 
+
 def read_odim(
-        odim_file: str,
-        lazy_load: bool = True,
-        **kwargs,
+    odim_file: str,
+    lazy_load: bool = True,
+    **kwargs,
 ) -> List:
     """
     Read an ODIM H5 file.
@@ -530,6 +577,7 @@ def read_odim(
     (radar, _) = read_write_odim(odim_file, lazy_load=lazy_load, **kwargs)
     return radar
 
+
 def odim_str_type_id(text_bytes):
     """Generate ODIM-conformant h5py string type ID for `text_bytes`."""
     # h5py default string type is STRPAD STR_NULLPAD
@@ -538,6 +586,7 @@ def odim_str_type_id(text_bytes):
     type_id.set_strpad(h5py.h5t.STR_NULLTERM)
     type_id.set_size(len(text_bytes) + 1)
     return type_id
+
 
 def write_odim_str_attrib(group, attrib_name: str, text: str):
     """Write ODIM-conformant h5py string attribute.
@@ -550,12 +599,15 @@ def write_odim_str_attrib(group, attrib_name: str, text: str):
         del group.attrs[attrib_name]
 
     group_id = group.id
-    text_bytes = text.encode('utf-8')
+    text_bytes = text.encode("utf-8")
     type_id = odim_str_type_id(text_bytes)
     space = h5py.h5s.create(h5py.h5s.SCALAR)
-    att_id = h5py.h5a.create(group_id, attrib_name.encode('utf-8'), type_id, space)
+    att_id = h5py.h5a.create(group_id, attrib_name.encode("utf-8"), type_id, space)
     text_array = np.array(text_bytes)
     att_id.write(text_array)
+
+    return None
+
 
 def copy_h5_data(h5_tilt, orig_id: str):
     """Add a data array to `h5_tilt` by copying data with `orig_id`.
