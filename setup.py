@@ -16,7 +16,9 @@ EMAIL = "valentin.louf@bom.gov.au"
 AUTHOR = "Valentin Louf"
 
 # What packages are required for this module to be executed?
-REQUIRED = ["numpy", "dask", "xarray", "h5py", "pyproj"]
+def read_requirements():
+    with open(os.path.join(os.path.dirname(__file__), 'requirements.txt')) as f:
+        return f.read().splitlines()
 
 # The rest you shouldn't have to touch too much :)
 # ------------------------------------------------
@@ -79,8 +81,9 @@ setup(
     author_email=EMAIL,
     url=URL,
     packages=find_packages(exclude=("tests",)),
-    install_requires=REQUIRED,
+    install_requires=read_requirements(),
     include_package_data=True,
+    extras_require={'dev': ['pytest']},
     license="ISC",
     classifiers=[  # Optional
         # How mature is this project? Common values are
