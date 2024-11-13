@@ -1,4 +1,4 @@
-name: Publish UNRAVEL to PyPI / GitHub
+name: Publish PYODIM to PyPI
 
 on:
   release:
