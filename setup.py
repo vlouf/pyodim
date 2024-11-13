@@ -81,7 +81,7 @@ setup(
         "dask>=2020.12.0",
         "xarray>=0.18.0",
         "pyproj>=3.1.0",
-        "h5py>=3.0"
+        "h5py>=3.0",
         "pytest"
     ],
     include_package_data=True,
