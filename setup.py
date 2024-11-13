@@ -15,11 +15,6 @@ URL = "https://github.com/vlouf/pyodim"
 EMAIL = "valentin.louf@bom.gov.au"
 AUTHOR = "Valentin Louf"
 
-# What packages are required for this module to be executed?
-def read_requirements():
-    with open('requirements.txt') as f:
-        return f.read().splitlines()
-
 # The rest you shouldn't have to touch too much :)
 # ------------------------------------------------
 # Except, perhaps the License and Trove Classifiers!
@@ -81,7 +76,14 @@ setup(
     author_email=EMAIL,
     url=URL,
     packages=find_packages(exclude=("tests",)),
-    install_requires=read_requirements(),
+    install_requires=[
+        "numpy>=1.21.0",
+        "dask>=2020.12.0",
+        "xarray>=0.18.0",
+        "pyproj>=3.1.0",
+        "h5py>=3.0"
+        "pytest"
+    ],
     include_package_data=True,
     extras_require={'dev': ['pytest']},
     license="ISC",
