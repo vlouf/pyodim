@@ -17,7 +17,7 @@ AUTHOR = "Valentin Louf"
 
 # What packages are required for this module to be executed?
 def read_requirements():
-    with open(os.path.join(os.path.dirname(__file__), 'requirements.txt')) as f:
+    with open('requirements.txt') as f:
         return f.read().splitlines()
 
 # The rest you shouldn't have to touch too much :)
