@@ -5,11 +5,11 @@ Natively reading ODIM H5 radar files in Python.
 @author: Valentin Louf <valentin.louf@bom.gov.au>
 @institutions: Bureau of Meteorology and Monash University.
 @creation: 21/01/2020
-@date: 12/02/2024
+@date: 30/05/2025
 
 .. autosummary::
     :toctree: generated/
-    
+
     buffer
     cartesian_to_geographic
     check_nyquist
@@ -84,7 +84,17 @@ def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: flo
 @buffer
 def check_nyquist(dset: xr.Dataset) -> None:
     """
-    Check if the dataset Nyquist velocity corresponds to the PRF information.
+    This is a sanity check to ensure that the Nyquist velocity is consistent
+    with the PRF and wavelength attributes in the dataset.
+
+    Parameters:
+    ===========
+    dset: xarray.Dataset
+        Dataset containing the attributes 'wavelength', 'highprf', and 'NI'.
+
+    Raises:
+    =======
+    AssertionError: If the Nyquist velocity is not consistent with the PRF.
     """
     wavelength = dset.attrs["wavelength"]
     prf = dset.attrs["highprf"]
@@ -515,17 +525,14 @@ def read_write_odim(
     lazy_load: bool = True,
     read_write: bool = False,
     **kwargs,
-):
+) -> Tuple[List[xr.Dataset], h5py.File]:
     """Read an ODIM H5 file and return h5py handle.
 
     @param read_write: open in read-write mode if True.
     @see read_odim().
     """
     rw_mode = "r+" if read_write else "r"
-    try:
-        hfile = h5py.File(odim_file, rw_mode)
-    except Exception as e:
-        return None
+    hfile = h5py.File(odim_file, rw_mode)
 
     nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
 
@@ -544,7 +551,7 @@ def read_odim(
     odim_file: str,
     lazy_load: bool = True,
     **kwargs,
-) -> List:
+) -> List[xr.Dataset]:
     """
     Read an ODIM H5 file.
 
@@ -580,12 +587,19 @@ def odim_str_type_id(text_bytes):
     return type_id
 
 
-def write_odim_str_attrib(group, attrib_name: str, text: str):
-    """Write ODIM-conformant h5py string attribute.
+def write_odim_str_attrib(group, attrib_name: str, text: str) -> None:
+    """
+    Write ODIM-conformant h5py string attribute.
+    If the attribute already exists, it will be overwritten.
 
-    @param group: h5py group
-    @param attrib_name: attribute name
-    @param text: attribute value
+    Parameters:
+    ===========
+    group:
+        h5py group to which the attribute will be added.
+    attrib_name:
+        name of the attribute to be added.
+    text:
+        text to be written as the attribute value.
     """
     if attrib_name in group.attrs:
         del group.attrs[attrib_name]
@@ -601,13 +615,19 @@ def write_odim_str_attrib(group, attrib_name: str, text: str):
     return None
 
 
-def copy_h5_data(h5_tilt, orig_id: str):
+def copy_h5_data(h5_tilt, orig_id: str) -> str:
     """Add a data array to `h5_tilt` by copying data with `orig_id`.
+    This function is used to duplicate an existing data array in the HDF5 file
+    and return the new data ID.
+    The new data ID is generated based on the current number of data arrays
+    in the HDF5 file, ensuring that it is unique.
 
-    @param h5_tilt: h5py sweep we're adding to.
-    @param orig_id: id of original data.
-
-    @return id of new data.
+    Parameters:
+    ===========
+    h5_tilt: h5py.File
+        HDF5 Dataset tilt where the data will be copied.
+    orig_id: str
+        The ID of the original data array to be copied.
     """
     # current data_count
     data_count = len([k for k in h5_tilt.keys() if k.startswith("data")])
