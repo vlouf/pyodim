@@ -21,13 +21,14 @@ def sample_odim_file():
 
 def test_read_odim(sample_odim_file):
     """
-    Test the read_odim function to ensure it correctly reads an ODIM H5 file and 
+    Test the read_odim function to ensure it correctly reads an ODIM H5 file and
     returns an xarray Dataset with expected properties.
     """
     # Call read_odim on the test file and get the dataset
     rsets = read_odim(sample_odim_file)
-    dataset = rsets[0].compute()
+    assert len(rsets) > 1, "No sweeps in radar datasets found"
     
+    dataset = rsets[0].compute()
     # Assert that the output is an xarray Dataset
     assert isinstance(dataset, xr.Dataset), "Output is not an xarray Dataset."
 
@@ -40,6 +41,8 @@ def test_read_odim(sample_odim_file):
 
     # Optional: Check for specific radar fields (e.g., reflectivity, if expected)
     assert 'TH' in dataset.data_vars, "Expected data variable 'reflectivity' is missing."
+    assert 'CLASS' in dataset.data_vars, "Expected data variable 'classification' is missing"
 
     # Check a basic property of the data (example: shape or value range)
     assert dataset['TH'].shape[0] > 0, "Reflectivity data is empty."
+
