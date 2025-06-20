@@ -22,7 +22,7 @@ Natively reading ODIM H5 radar files in Python.
     read_odim_slice
     read_odim
 """
-
+import warnings
 import datetime
 import traceback
 from typing import Dict, List, Tuple
@@ -434,7 +434,7 @@ def read_odim_slice(
 
 
 def read_odim_slice_h5(
-    hfile: str,
+    hfile: h5py.File,
     nslice: int = 0,
     include_fields: List = [],
     exclude_fields: List = [],
@@ -475,13 +475,21 @@ def read_odim_slice_h5(
             pass
 
     for datakey in hfile[f"/{rootkey}"].keys():
-        if not datakey.startswith("data"):
+        if not (datakey.startswith("data") or datakey.startswith("quality")):
             continue
 
         gain = hfile[f"/{rootkey}/{datakey}/what"].attrs["gain"]
         nodata = hfile[f"/{rootkey}/{datakey}/what"].attrs["nodata"]
         offset = hfile[f"/{rootkey}/{datakey}/what"].attrs["offset"]
-        name = hfile[f"/{rootkey}/{datakey}/what"].attrs["quantity"].decode("utf-8")
+        hqtt = hfile[f"/{rootkey}/{datakey}/what"].attrs["quantity"]
+        if isinstance(hqtt, bytes):
+            name = hqtt.decode("utf-8")
+        elif isinstance(hqtt, str):
+            name = hqtt
+        else:
+            warnings.warn(f"Unknown type {type(hqtt)} for quantity attribute: {hqtt!r}.")
+            continue    
+
         # Check if field should be read.
         if len(include_fields) > 0:
             if name not in include_fields:
