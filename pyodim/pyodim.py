@@ -22,10 +22,12 @@ Natively reading ODIM H5 radar files in Python.
     read_odim_slice
     read_odim
 """
+
 import warnings
 import datetime
 import traceback
-from typing import Dict, List, Tuple
+import logging
+from typing import Dict, List, Tuple, Optional
 
 import dask
 import h5py
@@ -33,6 +35,25 @@ import pyproj
 import pandas as pd
 import numpy as np
 import xarray as xr
+
+from .exceptions import (
+    PyOdimError,
+    MetadataError,
+    CoordinateError,
+    NyquistConsistencyError,
+    H5FileError,
+)
+from .validation import (
+    validate_file_path,
+    validate_odim_file_format,
+    validate_slice_number,
+    validate_field_lists,
+    validate_boolean_parameter,
+    validate_geographic_coordinates,
+)
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 def buffer(func):
@@ -52,7 +73,9 @@ def buffer(func):
     return wrapper
 
 
-def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: float) -> Tuple[np.ndarray, np.ndarray]:
+def cartesian_to_geographic(
+    x: np.ndarray, y: np.ndarray, lon0: float, lat0: float
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Transform cartesian coordinates to lat/lon using the Azimuth Equidistant
     projection.
@@ -69,19 +92,38 @@ def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: flo
         Radar site latitude.
 
     Returns:
+    ========
     lon: ndarray
         Longitude of each gate.
     lat: ndarray
         Latitude of each gate.
+
+    Raises:
+    =======
+    CoordinateError: If coordinate transformation fails.
+    TypeError: If input arrays are not numpy arrays.
+    ValueError: If input coordinates are invalid.
     """
-    georef = pyproj.Proj(f"+proj=aeqd +lon_0={lon0} +lat_0={lat0} +ellps=WGS84")
-    lon, lat = georef(x, y, inverse=True)
-    lon = lon.astype(np.float32)
-    lat = lat.astype(np.float32)
-    return lon, lat
+    # Validate inputs
+    if not isinstance(x, np.ndarray) or not isinstance(y, np.ndarray):
+        raise TypeError("x and y must be numpy arrays")
+
+    if x.shape != y.shape:
+        raise ValueError(f"x and y must have the same shape, got {x.shape} and {y.shape}")
+
+    # Validate geographic coordinates
+    lon0, lat0 = validate_geographic_coordinates(lon0, lat0)
+
+    try:
+        georef = pyproj.Proj(f"+proj=aeqd +lon_0={lon0} +lat_0={lat0} +ellps=WGS84")
+        lon, lat = georef(x, y, inverse=True)
+        lon = lon.astype(np.float32)
+        lat = lat.astype(np.float32)
+        return lon, lat
+    except Exception as e:
+        raise CoordinateError(f"Failed to transform coordinates: {e}")
 
 
-@buffer
 def check_nyquist(dset: xr.Dataset) -> None:
     """
     This is a sanity check to ensure that the Nyquist velocity is consistent
@@ -94,14 +136,30 @@ def check_nyquist(dset: xr.Dataset) -> None:
 
     Raises:
     =======
-    AssertionError: If the Nyquist velocity is not consistent with the PRF.
+    NyquistConsistencyError: If the Nyquist velocity is not consistent with the PRF.
+    MetadataError: If required attributes are missing.
     """
-    wavelength = dset.attrs["wavelength"]
-    prf = dset.attrs["highprf"]
-    nyquist = dset.attrs["NI"]
-    ny_int = 1e-2 * prf * wavelength / 4
+    required_attrs = ["wavelength", "highprf", "NI"]
+    missing_attrs = [attr for attr in required_attrs if attr not in dset.attrs]
 
-    assert np.abs(nyquist - ny_int) < 0.5, "Nyquist not consistent with PRF"
+    if missing_attrs:
+        raise MetadataError(f"Missing required attributes for Nyquist check: {missing_attrs}")
+
+    try:
+        wavelength = float(dset.attrs["wavelength"])
+        prf = float(dset.attrs["highprf"])
+        nyquist = float(dset.attrs["NI"])
+
+        ny_int = 1e-2 * prf * wavelength / 4
+
+        if np.abs(nyquist - ny_int) >= 0.5:
+            raise NyquistConsistencyError(
+                f"Nyquist velocity ({nyquist}) not consistent with PRF. "
+                f"Expected: {ny_int:.2f}, got: {nyquist:.2f}"
+            )
+
+    except (ValueError, TypeError) as e:
+        raise MetadataError(f"Invalid attribute values for Nyquist check: {e}")
 
 
 def coord_from_metadata(metadata: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -124,12 +182,17 @@ def coord_from_metadata(metadata: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndar
         Sweep elevation
     """
     da = 360 / metadata["nrays"]
-    azimuth = np.linspace(metadata["astart"] + da / 2, 360 - da, metadata["nrays"], dtype=np.float32)
+    azimuth = np.linspace(
+        metadata["astart"] + da / 2, 360 - da, metadata["nrays"], dtype=np.float32
+    )
 
     # rstart is in KM !!! STUPID.
     rstart_center = 1e3 * metadata["rstart"] + metadata["rscale"] / 2
     r = np.arange(
-        rstart_center, rstart_center + metadata["nbins"] * metadata["rscale"], metadata["rscale"], dtype=np.float32
+        rstart_center,
+        rstart_center + metadata["nbins"] * metadata["rscale"],
+        metadata["rscale"],
+        dtype=np.float32,
     )
 
     elev = np.array([metadata["elangle"]], dtype=np.float32)
@@ -152,11 +215,31 @@ def field_metadata(quantity_name: str) -> Dict:
         Metadata dictionnary.
     """
     metadata = {
-        "TH": {"units": "dBZ", "standard_name": "equivalent_reflectivity_factor", "long_name": "Total power"},
-        "TV": {"units": "dBZ", "standard_name": "equivalent_reflectivity_factor", "long_name": "Total power"},
-        "DBZH": {"units": "dBZ", "standard_name": "equivalent_reflectivity_factor", "long_name": "Reflectivity"},
-        "DBZH_CLEAN": {"units": "dBZ", "standard_name": "equivalent_reflectivity_factor", "long_name": "Reflectivity"},
-        "DBZV": {"units": "dBZ", "standard_name": "equivalent_reflectivity_factor", "long_name": "Reflectivity"},
+        "TH": {
+            "units": "dBZ",
+            "standard_name": "equivalent_reflectivity_factor",
+            "long_name": "Total power",
+        },
+        "TV": {
+            "units": "dBZ",
+            "standard_name": "equivalent_reflectivity_factor",
+            "long_name": "Total power",
+        },
+        "DBZH": {
+            "units": "dBZ",
+            "standard_name": "equivalent_reflectivity_factor",
+            "long_name": "Reflectivity",
+        },
+        "DBZH_CLEAN": {
+            "units": "dBZ",
+            "standard_name": "equivalent_reflectivity_factor",
+            "long_name": "Reflectivity",
+        },
+        "DBZV": {
+            "units": "dBZ",
+            "standard_name": "equivalent_reflectivity_factor",
+            "long_name": "Reflectivity",
+        },
         "ZDR": {
             "units": "dB",
             "standard_name": "log_differential_reflectivity_hv",
@@ -194,8 +277,16 @@ def field_metadata(quantity_name: str) -> Dict:
             "valid_min": 0.0,
             "comment": "Also know as signal quality index (SQI)",
         },
-        "SNR": {"units": "dB", "standard_name": "signal_to_noise_ratio", "long_name": "Signal to noise ratio"},
-        "SNRH": {"units": "dB", "standard_name": "signal_to_noise_ratio", "long_name": "Signal to noise ratio"},
+        "SNR": {
+            "units": "dB",
+            "standard_name": "signal_to_noise_ratio",
+            "long_name": "Signal to noise ratio",
+        },
+        "SNRH": {
+            "units": "dB",
+            "standard_name": "signal_to_noise_ratio",
+            "long_name": "Signal to noise ratio",
+        },
         "VRAD": {
             "units": "meters_per_second",
             "standard_name": "radial_velocity",
@@ -394,8 +485,8 @@ def radar_coordinates_to_xyz(
 def read_odim_slice(
     odim_file: str,
     nslice: int = 0,
-    include_fields: List = [],
-    exclude_fields: List = [],
+    include_fields: Optional[List[str]] = None,
+    exclude_fields: Optional[List[str]] = None,
     check_NI: bool = False,
     read_write: bool = False,
 ) -> xr.Dataset:
@@ -408,29 +499,56 @@ def read_odim_slice(
         ODIM H5 filename.
     nslice: int
         Slice number we want to extract (start indexing at 0).
-    include_fields: list
+    include_fields: list, optional
         Specific fields to be exclusively read.
-    exclude_fields: list
+    exclude_fields: list, optional
         Specific fields to be excluded from reading.
     check_NI: bool
         Check NI parameter in ODIM file and compare it to the PRF.
-    read_write: open in read-write mode if True
+    read_write: bool
+        Open in read-write mode if True.
 
     Returns:
     ========
     dataset: xarray.Dataset
         xarray dataset of one sweep of the ODIM file.
+
+    Raises:
+    =======
+    FileNotFoundError: If the ODIM file doesn't exist.
+    InvalidFileFormatError: If the file is not a valid ODIM H5 format.
+    InvalidSliceError: If the slice number is invalid.
+    H5FileError: If there's an error accessing the H5 file.
     """
+    # Validate inputs
+    odim_file = validate_file_path(odim_file)
+    validate_odim_file_format(odim_file)
+    include_fields, exclude_fields = validate_field_lists(include_fields, exclude_fields)
+    check_NI = validate_boolean_parameter(check_NI, "check_NI")
+    read_write = validate_boolean_parameter(read_write, "read_write")
+
     rw_mode = "r+" if read_write else "r"
-    with h5py.File(odim_file, rw_mode) as hfile:
-        return read_odim_slice_h5(
-            hfile,
-            nslice=nslice,
-            include_fields=include_fields,
-            exclude_fields=exclude_fields,
-            check_NI=check_NI,
-            read_write=read_write,
-        )
+
+    try:
+        with h5py.File(odim_file, rw_mode) as hfile:
+            # Validate slice number
+            nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
+            nslice = validate_slice_number(nslice, nsweep)
+
+            return read_odim_slice_h5(
+                hfile,
+                nslice=nslice,
+                include_fields=include_fields,
+                exclude_fields=exclude_fields,
+                check_NI=check_NI,
+                read_write=read_write,
+            )
+    except (OSError, IOError) as e:
+        raise H5FileError(f"Cannot open H5 file {odim_file}: {e}")
+    except Exception as e:
+        if isinstance(e, PyOdimError):
+            raise
+        raise H5FileError(f"Unexpected error reading ODIM file: {e}")
 
 
 def read_odim_slice_h5(
@@ -454,7 +572,10 @@ def read_odim_slice_h5(
     sweeps = dict()
     for key in hfile["/"].keys():
         if key.startswith("dataset"):
-            sweeps[key] = (hfile[f"/{key}/where"].attrs["elangle"], hfile[f"/{key}/what"].attrs["starttime"])
+            sweeps[key] = (
+                hfile[f"/{key}/where"].attrs["elangle"],
+                hfile[f"/{key}/what"].attrs["starttime"],
+            )
 
     sorted_keys = sorted(sweeps, key=lambda k: sweeps[k])
     rootkey = sorted_keys[nslice]
@@ -488,7 +609,7 @@ def read_odim_slice_h5(
             name = hqtt
         else:
             warnings.warn(f"Unknown type {type(hqtt)} for quantity attribute: {hqtt!r}.")
-            continue    
+            continue
 
         # Check if field should be read.
         if len(include_fields) > 0:
@@ -505,11 +626,16 @@ def read_odim_slice_h5(
         dataset[name].attrs["id"] = datakey
 
     time = generate_timestamp(
-        metadata["start_time"], metadata["end_time"], coordinates_metadata["nrays"], coordinates_metadata["a1gate"]
+        metadata["start_time"],
+        metadata["end_time"],
+        coordinates_metadata["nrays"],
+        coordinates_metadata["a1gate"],
     )
     r, azi, elev = coord_from_metadata(coordinates_metadata)
     x, y, z = radar_coordinates_to_xyz(r, azi, elev)
-    longitude, latitude = cartesian_to_geographic(x, y, dataset.attrs["longitude"], dataset.attrs["latitude"])
+    longitude, latitude = cartesian_to_geographic(
+        x, y, dataset.attrs["longitude"], dataset.attrs["latitude"]
+    )
 
     dataset = dataset.merge(
         {
@@ -570,19 +696,51 @@ def read_odim(
     lazy_load: bool
         Lazily load the data if true, read and load in memory the entire dataset
         if false.
-    include_fields: list
+    include_fields: list, optional
         Specific fields to be exclusively read.
-    exclude_fields: list
+    exclude_fields: list, optional
         Specific fields to be excluded from reading.
+    check_NI: bool, optional
+        Check NI parameter in ODIM file and compare it to the PRF.
+    read_write: bool, optional
+        Open in read-write mode if True.
 
     Returns:
     ========
     radar: list
         List of xarray datasets, each item in a the list is one sweep of the
         radar data (ordered from lowest elevation scan to highest).
+
+    Raises:
+    =======
+    FileNotFoundError: If the ODIM file doesn't exist.
+    InvalidFileFormatError: If the file is not a valid ODIM H5 format.
+    H5FileError: If there's an error accessing the H5 file.
+
+    Examples:
+    =========
+    >>> # Read all sweeps from an ODIM file
+    >>> datasets = read_odim("radar_file.h5")
+    >>>
+    >>> # Read only reflectivity data
+    >>> datasets = read_odim("radar_file.h5", include_fields=["DBZH"])
+    >>>
+    >>> # Load data immediately (not lazy)
+    >>> datasets = read_odim("radar_file.h5", lazy_load=False)
     """
-    (radar, _) = read_write_odim(odim_file, lazy_load=lazy_load, **kwargs)
-    return radar
+    # Validate inputs
+    odim_file = validate_file_path(odim_file)
+    validate_odim_file_format(odim_file)
+    lazy_load = validate_boolean_parameter(lazy_load, "lazy_load")
+
+    try:
+        (radar, _) = read_write_odim(odim_file, lazy_load=lazy_load, **kwargs)
+        return radar
+    except Exception as e:
+        if isinstance(e, PyOdimError):
+            raise
+        logger.error(f"Unexpected error reading ODIM file {odim_file}: {e}")
+        raise H5FileError(f"Failed to read ODIM file: {e}")
 
 
 def odim_str_type_id(text_bytes):
