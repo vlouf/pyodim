@@ -22,6 +22,7 @@ Natively reading ODIM H5 radar files in Python.
     read_odim_slice
     read_odim
 """
+
 import warnings
 import datetime
 import traceback
@@ -435,12 +436,39 @@ def read_odim_slice(
 
 def read_odim_slice_h5(
     hfile: h5py.File,
-    nslice: int = 0,
+    nslice: int,
     include_fields: List = [],
     exclude_fields: List = [],
     check_NI: bool = False,
     read_write: bool = False,
 ) -> xr.Dataset:
+    """
+    Read a single sweep (slice) from an ODIM HDF5 radar file.
+
+    Parameters
+    ----------
+    hfile : h5py.File
+        Open HDF5 file handle pointing to an ODIM-compliant radar volume.
+    nslice : int
+        Index of the sweep to read (0-based). Must be less than or equal to the number of available sweeps.
+    include_fields : list of str, optional
+        List of radar fields (quantities) to include. If empty, all fields are read.
+    exclude_fields : list of str, optional
+        List of radar fields to exclude from reading.
+    check_NI : bool, optional
+        If True, validates Nyquist velocity consistency with PRF.
+    read_write : bool, optional
+        Indicates if the file is opened in read-write mode (affects internal handling).
+
+    Returns
+    -------
+    xr.Dataset
+        Radar sweep data including:
+        - Radar fields (e.g., reflectivity, velocity)
+        - Coordinates: range, azimuth, elevation, x, y, z, longitude, latitude
+        - Time dimension
+        - Metadata attributes (root and sweep-specific)
+    """
     # if nslice == 0:
     #     raise ValueError('Slice numbering start at 1.')
     if type(include_fields) is not list:
@@ -488,7 +516,7 @@ def read_odim_slice_h5(
             name = hqtt
         else:
             warnings.warn(f"Unknown type {type(hqtt)} for quantity attribute: {hqtt!r}.")
-            continue    
+            continue
 
         # Check if field should be read.
         if len(include_fields) > 0:
@@ -534,20 +562,54 @@ def read_write_odim(
     read_write: bool = False,
     **kwargs,
 ) -> Tuple[List[xr.Dataset], h5py.File]:
-    """Read an ODIM H5 file and return h5py handle.
+    """
+    Read one or multiple sweeps from an ODIM HDF5 radar file, optionally lazily, and return both the data and the file handle.
 
-    @param read_write: open in read-write mode if True.
-    @see read_odim().
+    Parameters
+    ----------
+    odim_file : str
+        Path to the ODIM HDF5 radar file.
+    lazy_load : bool, optional
+        If True, returns Dask-delayed objects for lazy evaluation. If False, computes immediately.
+    read_write : bool, optional
+        If True, opens the file in read-write mode ('r+'), otherwise read-only ('r').
+    **kwargs
+        Additional arguments forwarded to `read_odim_slice_h5`, such as:
+        - nslice (int): Specific sweep index to read.
+        - include_fields (list of str): Fields to include.
+        - exclude_fields (list of str): Fields to exclude.
+
+    Returns
+    -------
+    tuple
+        (radar, hfile)
+        radar : list of xr.Dataset or list of dask.delayed
+            Radar sweeps ordered by elevation angle.
+        hfile : h5py.File
+            Open file handle for further inspection or modification.
     """
     rw_mode = "r+" if read_write else "r"
     hfile = h5py.File(odim_file, rw_mode)
 
+    user_sweep = kwargs.get("nslice", None)
     nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
 
     radar = []
-    for sweep in range(0, nsweep):
-        c = dask.delayed(read_odim_slice_h5)(hfile, sweep, **kwargs)
+    if user_sweep is not None:
+
+        kwargs.pop("nslice", None)  # Prevent duplicate argument
+        print(f"User asked for sweep #{user_sweep}")
+        if user_sweep < 0 or user_sweep >= nsweep:
+            raise ValueError(f"sweep index {user_sweep} out of range (0-{nsweep-1})")
+
+        # Only process the requested sweep
+        c = dask.delayed(read_odim_slice_h5)(hfile, user_sweep, **kwargs)
         radar.append(c)
+    else:
+        # Process all sweeps
+        for sweep in range(nsweep):
+            c = dask.delayed(read_odim_slice_h5)(hfile, sweep, **kwargs)
+            radar.append(c)
 
     if not lazy_load:
         radar = [r.compute() for r in radar]
@@ -561,25 +623,21 @@ def read_odim(
     **kwargs,
 ) -> List[xr.Dataset]:
     """
-    Read an ODIM H5 file.
+    Convenience wrapper to read radar sweeps from an ODIM HDF5 file and return them as a list of xarray.Dataset objects.
 
-    Parameters:
-    ===========
-    odim_file: str
-        ODIM H5 filename.
-    lazy_load: bool
-        Lazily load the data if true, read and load in memory the entire dataset
-        if false.
-    include_fields: list
-        Specific fields to be exclusively read.
-    exclude_fields: list
-        Specific fields to be excluded from reading.
+    Parameters
+    ----------
+    odim_file : str
+        Path to the ODIM HDF5 radar file.
+    lazy_load : bool, optional
+        If True, returns Dask-delayed objects for lazy evaluation. If False, directly load all the data in memory and returns the list of xarray.
+    **kwargs
+        Passed to `read_write_odim` (e.g., nslice, include_fields, exclude_fields).
 
-    Returns:
-    ========
-    radar: list
-        List of xarray datasets, each item in a the list is one sweep of the
-        radar data (ordered from lowest elevation scan to highest).
+    Returns
+    -------
+    list of xr.Dataset
+        Radar sweeps ordered by elevation angle, each as an xarray.Dataset.
     """
     (radar, _) = read_write_odim(odim_file, lazy_load=lazy_load, **kwargs)
     return radar
