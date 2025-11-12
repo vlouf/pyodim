@@ -598,7 +598,7 @@ def read_write_odim(
     if user_sweep is not None:
 
         kwargs.pop("nslice", None)  # Prevent duplicate argument
-        print(f"User asked for sweep #{user_sweep}")
+        # print(f"User asked for sweep #{user_sweep}")
         if user_sweep < 0 or user_sweep >= nsweep:
             raise ValueError(f"sweep index {user_sweep} out of range (0-{nsweep-1})")
 
