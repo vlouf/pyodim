@@ -35,5 +35,5 @@ jobs:
 
       - name: Upload coverage reports (optional)
         if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         continue-on-error: true
