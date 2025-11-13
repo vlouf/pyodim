@@ -503,6 +503,10 @@ def read_odim_slice_h5(
         dataset[name].attrs = field_metadata(name)
         # remember dataset id
         dataset[name].attrs["id"] = datakey
+        dataset[name].attrs["gain"] = gain
+        dataset[name].attrs["nodata"] = nodata
+        dataset[name].attrs["offset"] = offset
+        dataset[name].attrs["quantity"] = hqtt
 
     time = generate_timestamp(
         metadata["start_time"], metadata["end_time"], coordinates_metadata["nrays"], coordinates_metadata["a1gate"]
@@ -524,6 +528,9 @@ def read_odim_slice_h5(
             "latitude": (("azimuth", "range"), latitude),
         }
     )
+
+    for k, v in coordinates_metadata.items():
+        dataset.attrs.update({k: v})
 
     return dataset
 
