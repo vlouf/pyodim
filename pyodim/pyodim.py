@@ -5,12 +5,11 @@ Natively reading ODIM H5 radar files in Python.
 @author: Valentin Louf <valentin.louf@bom.gov.au>
 @institutions: Bureau of Meteorology and Monash University.
 @creation: 21/01/2020
-@date: 30/05/2025
+@date: 13/11/2025
 
 .. autosummary::
     :toctree: generated/
 
-    buffer
     cartesian_to_geographic
     check_nyquist
     coord_from_metadata
@@ -19,9 +18,9 @@ Natively reading ODIM H5 radar files in Python.
     get_dataset_metadata
     get_root_metadata
     radar_coordinates_to_xyz
-    read_odim_slice
     read_odim
 """
+
 import warnings
 import datetime
 import traceback
@@ -33,23 +32,6 @@ import pyproj
 import pandas as pd
 import numpy as np
 import xarray as xr
-
-
-def buffer(func):
-    """
-    Decorator to catch and kill error message. Almost want to name the function
-    dont_fail.
-    """
-
-    def wrapper(*args, **kwargs):
-        try:
-            rslt = func(*args, **kwargs)
-        except Exception:
-            traceback.print_exc()
-            rslt = None
-        return rslt
-
-    return wrapper
 
 
 def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: float) -> Tuple[np.ndarray, np.ndarray]:
@@ -81,7 +63,6 @@ def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: flo
     return lon, lat
 
 
-@buffer
 def check_nyquist(dset: xr.Dataset) -> None:
     """
     This is a sanity check to ensure that the Nyquist velocity is consistent
@@ -134,6 +115,32 @@ def coord_from_metadata(metadata: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndar
 
     elev = np.array([metadata["elangle"]], dtype=np.float32)
     return r, azimuth, elev
+
+
+def copy_h5_data(h5_tilt, orig_id: str) -> str:
+    """Add a data array to `h5_tilt` by copying data with `orig_id`.
+    This function is used to duplicate an existing data array in the HDF5 file
+    and return the new data ID.
+    The new data ID is generated based on the current number of data arrays
+    in the HDF5 file, ensuring that it is unique.
+
+    Parameters:
+    ===========
+    h5_tilt: h5py.File
+        HDF5 Dataset tilt where the data will be copied.
+    orig_id: str
+        The ID of the original data array to be copied.
+    """
+    # current data_count
+    data_count = len([k for k in h5_tilt.keys() if k.startswith("data")])
+
+    # use data_count for data_id
+    data_id = f"data{data_count + 1}"
+
+    # duplicate original
+    h5_tilt.copy(orig_id, data_id)
+
+    return data_id
 
 
 def field_metadata(quantity_name: str) -> Dict:
@@ -354,6 +361,28 @@ def get_root_metadata(hfile) -> Dict:
     return rootmetadata
 
 
+def odim_str_type_id(text_bytes: bytes) -> h5py.h5t.TypeID:
+    """
+    Generate ODIM-conformant HDF5 string type ID with null-termination.
+
+    Parameters
+    ----------
+    text_bytes : bytes
+        Byte string for which to create the type ID.
+
+    Returns
+    -------
+    h5py.h5t.TypeID
+        String type ID sized for text_bytes with STR_NULLTERM padding.
+    """
+    # h5py default string type is STRPAD STR_NULLPAD
+    # ODIM spec string type is STRPAD STR_NULLTERM
+    type_id = h5py.h5t.TypeID.copy(h5py.h5t.C_S1)
+    type_id.set_strpad(h5py.h5t.STR_NULLTERM)
+    type_id.set_size(len(text_bytes) + 1)
+    return type_id
+
+
 def radar_coordinates_to_xyz(
     r: np.ndarray, azimuth: np.ndarray, elevation: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -391,56 +420,41 @@ def radar_coordinates_to_xyz(
     return x, y, z
 
 
-def read_odim_slice(
-    odim_file: str,
-    nslice: int = 0,
-    include_fields: List = [],
-    exclude_fields: List = [],
-    check_NI: bool = False,
-    read_write: bool = False,
-) -> xr.Dataset:
-    """
-    Read into an xarray dataset one sweep of the ODIM file.
-
-    Parameters:
-    ===========
-    odim_file: str
-        ODIM H5 filename.
-    nslice: int
-        Slice number we want to extract (start indexing at 0).
-    include_fields: list
-        Specific fields to be exclusively read.
-    exclude_fields: list
-        Specific fields to be excluded from reading.
-    check_NI: bool
-        Check NI parameter in ODIM file and compare it to the PRF.
-    read_write: open in read-write mode if True
-
-    Returns:
-    ========
-    dataset: xarray.Dataset
-        xarray dataset of one sweep of the ODIM file.
-    """
-    rw_mode = "r+" if read_write else "r"
-    with h5py.File(odim_file, rw_mode) as hfile:
-        return read_odim_slice_h5(
-            hfile,
-            nslice=nslice,
-            include_fields=include_fields,
-            exclude_fields=exclude_fields,
-            check_NI=check_NI,
-            read_write=read_write,
-        )
-
-
 def read_odim_slice_h5(
     hfile: h5py.File,
-    nslice: int = 0,
+    nslice: int,
     include_fields: List = [],
     exclude_fields: List = [],
-    check_NI: bool = False,
-    read_write: bool = False,
+    check_nyq: bool = False,
+    **kwargs
 ) -> xr.Dataset:
+    """
+    Read a single sweep (slice) from an ODIM HDF5 radar file.
+
+    Parameters
+    ----------
+    hfile : h5py.File
+        Open HDF5 file handle pointing to an ODIM-compliant radar volume.
+    nslice : int
+        Index of the sweep to read (0-based). Must be less than or equal to the number of available sweeps.
+    include_fields : list of str, optional
+        List of radar fields (quantities) to include. If empty, all fields are read.
+    exclude_fields : list of str, optional
+        List of radar fields to exclude from reading.
+    check_nyq : bool, optional
+        If True, validates Nyquist velocity consistency with PRF.
+    read_write : bool, optional
+        Indicates if the file is opened in read-write mode (affects internal handling).
+
+    Returns
+    -------
+    xr.Dataset
+        Radar sweep data including:
+        - Radar fields (e.g., reflectivity, velocity)
+        - Coordinates: range, azimuth, elevation, x, y, z, longitude, latitude
+        - Time dimension
+        - Metadata attributes (root and sweep-specific)
+    """
     # if nslice == 0:
     #     raise ValueError('Slice numbering start at 1.')
     if type(include_fields) is not list:
@@ -467,12 +481,14 @@ def read_odim_slice_h5(
     dataset = xr.Dataset()
     dataset.attrs = get_root_metadata(hfile)
     dataset.attrs.update(metadata)
-    if check_NI:
+    if check_nyq:
         try:
             check_nyquist(dataset)
         except AssertionError:
             print("Nyquist not consistent with PRF")
-            pass
+        except Exception:
+            print("Error during Nyquist check:")
+            traceback.print_exc()
 
     for datakey in hfile[f"/{rootkey}"].keys():
         if not (datakey.startswith("data") or datakey.startswith("quality")):
@@ -488,7 +504,7 @@ def read_odim_slice_h5(
             name = hqtt
         else:
             warnings.warn(f"Unknown type {type(hqtt)} for quantity attribute: {hqtt!r}.")
-            continue    
+            continue
 
         # Check if field should be read.
         if len(include_fields) > 0:
@@ -499,9 +515,17 @@ def read_odim_slice_h5(
 
         data_value = hfile[f"/{rootkey}/{datakey}/data"][:].astype(np.float32)
         data_value = gain * np.ma.masked_equal(data_value, nodata) + offset
-        dataset = dataset.merge({name: (("azimuth", "range"), data_value)})
+        try:
+            dataset = dataset.merge({name: (("azimuth", "range"), data_value)})
+        except xr.MergeError:
+            warnings.warn(
+                "Duplicate field 'DBZH' found in sweep. Using last occurrence. "
+                "This indicates a potential issue with the ODIM file.",
+                UserWarning
+            )
+            dataset = dataset.merge({name: (("azimuth", "range"), data_value)}, compat="override")
+
         dataset[name].attrs = field_metadata(name)
-        # remember dataset id
         dataset[name].attrs["id"] = datakey
         dataset[name].attrs["gain"] = gain
         dataset[name].attrs["nodata"] = nodata
@@ -541,20 +565,54 @@ def read_write_odim(
     read_write: bool = False,
     **kwargs,
 ) -> Tuple[List[xr.Dataset], h5py.File]:
-    """Read an ODIM H5 file and return h5py handle.
+    """
+    Read one or multiple sweeps from an ODIM HDF5 radar file, optionally lazily, and return both the data and the file handle.
 
-    @param read_write: open in read-write mode if True.
-    @see read_odim().
+    Parameters
+    ----------
+    odim_file : str
+        Path to the ODIM HDF5 radar file.
+    lazy_load : bool, optional
+        If True, returns Dask-delayed objects for lazy evaluation. If False, computes immediately.
+    read_write : bool, optional
+        If True, opens the file in read-write mode ('r+'), otherwise read-only ('r').
+    **kwargs
+        Additional arguments forwarded to `read_odim_slice_h5`, such as:
+        - nslice (int): Specific sweep index to read.
+        - include_fields (list of str): Fields to include.
+        - exclude_fields (list of str): Fields to exclude.
+
+    Returns
+    -------
+    tuple
+        (radar, hfile)
+        radar : list of xr.Dataset or list of dask.delayed
+            Radar sweeps ordered by elevation angle.
+        hfile : h5py.File
+            Open file handle for further inspection or modification.
     """
     rw_mode = "r+" if read_write else "r"
     hfile = h5py.File(odim_file, rw_mode)
 
+    user_sweep = kwargs.get("nslice", None)
     nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
 
     radar = []
-    for sweep in range(0, nsweep):
-        c = dask.delayed(read_odim_slice_h5)(hfile, sweep, **kwargs)
+    if user_sweep is not None:
+
+        kwargs.pop("nslice", None)  # Prevent duplicate argument
+        # print(f"User asked for sweep #{user_sweep}")
+        if user_sweep < 0 or user_sweep >= nsweep:
+            raise ValueError(f"sweep index {user_sweep} out of range (0-{nsweep-1})")
+
+        # Only process the requested sweep
+        c = dask.delayed(read_odim_slice_h5)(hfile, user_sweep, **kwargs)
         radar.append(c)
+    else:
+        # Process all sweeps
+        for sweep in range(nsweep):
+            c = dask.delayed(read_odim_slice_h5)(hfile, sweep, **kwargs)
+            radar.append(c)
 
     if not lazy_load:
         radar = [r.compute() for r in radar]
@@ -568,38 +626,24 @@ def read_odim(
     **kwargs,
 ) -> List[xr.Dataset]:
     """
-    Read an ODIM H5 file.
+    Convenience wrapper to read radar sweeps from an ODIM HDF5 file and return them as a list of xarray.Dataset objects.
 
-    Parameters:
-    ===========
-    odim_file: str
-        ODIM H5 filename.
-    lazy_load: bool
-        Lazily load the data if true, read and load in memory the entire dataset
-        if false.
-    include_fields: list
-        Specific fields to be exclusively read.
-    exclude_fields: list
-        Specific fields to be excluded from reading.
+    Parameters
+    ----------
+    odim_file : str
+        Path to the ODIM HDF5 radar file.
+    lazy_load : bool, optional
+        If True, returns Dask-delayed objects for lazy evaluation. If False, directly load all the data in memory and returns the list of xarray.
+    **kwargs
+        Passed to `read_write_odim` (e.g., nslice, include_fields, exclude_fields).
 
-    Returns:
-    ========
-    radar: list
-        List of xarray datasets, each item in a the list is one sweep of the
-        radar data (ordered from lowest elevation scan to highest).
+    Returns
+    -------
+    list of xr.Dataset
+        Radar sweeps ordered by elevation angle, each as an xarray.Dataset.
     """
     (radar, _) = read_write_odim(odim_file, lazy_load=lazy_load, **kwargs)
     return radar
-
-
-def odim_str_type_id(text_bytes):
-    """Generate ODIM-conformant h5py string type ID for `text_bytes`."""
-    # h5py default string type is STRPAD STR_NULLPAD
-    # ODIM spec string type is STRPAD STR_NULLTERM
-    type_id = h5py.h5t.TypeID.copy(h5py.h5t.C_S1)
-    type_id.set_strpad(h5py.h5t.STR_NULLTERM)
-    type_id.set_size(len(text_bytes) + 1)
-    return type_id
 
 
 def write_odim_str_attrib(group, attrib_name: str, text: str) -> None:
@@ -629,29 +673,3 @@ def write_odim_str_attrib(group, attrib_name: str, text: str) -> None:
 
     return None
 
-
-def copy_h5_data(h5_tilt, orig_id: str) -> str:
-    """Add a data array to `h5_tilt` by copying data with `orig_id`.
-    This function is used to duplicate an existing data array in the HDF5 file
-    and return the new data ID.
-    The new data ID is generated based on the current number of data arrays
-    in the HDF5 file, ensuring that it is unique.
-
-    Parameters:
-    ===========
-    h5_tilt: h5py.File
-        HDF5 Dataset tilt where the data will be copied.
-    orig_id: str
-        The ID of the original data array to be copied.
-    """
-    # current data_count
-    data_count = len([k for k in h5_tilt.keys() if k.startswith("data")])
-
-    # use data_count for data_id
-    data_id = f"data{data_count + 1}"
-
-    # duplicate original
-    h5_tilt.copy(orig_id, data_id)
-
-    # return id
-    return data_id
