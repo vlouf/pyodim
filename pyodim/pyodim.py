@@ -290,7 +290,7 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
 
     # General metadata
     ds_how = hfile[f"/{dataset}/how"]
-    for k in {"NI", "highprf", "product"} & ds_how.attrs.keys():
+    for k in {"NI", "highprf", "product", "prt", "rapic_UNFOLDING", "rapic_HIPRF"} & ds_how.attrs.keys():
         metadata[k] = ds_how.attrs[k]
 
     sdate = hfile[f"/{dataset}/what"].attrs["startdate"].decode("utf-8")
