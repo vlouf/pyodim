@@ -33,6 +33,37 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 
+def prt_from_rapic_metadata(metadata) -> np.ndarray:
+    """
+    Generate PRT value for each ray using the legacy rapic metadata
+
+    Parameters:
+    ===========
+    metadata: dict
+        sweep metadata
+
+    Returns:
+    prt: ndarray
+        PRT of each gate
+    """
+    
+    prf_ratio_str = metadata['rapic_UNFOLDING'].decode('ascii')
+    high_prf_loc_str = metadata['rapic_HIPRF'].decode('ascii')
+    # calculate prt ratio, high prt and low prt
+    ratio_lhs = float(prf_ratio_str[0])
+    ratio_rhs = float(prf_ratio_str[2])
+    prt_ratio = ratio_rhs/ratio_lhs
+    prt_high = 1/metadata['highprf']
+    prt_low = prt_high*prt_ratio
+    # initialise prt array with low prt values
+    prt = np.zeros_like(sweep["azimuth"]) + prt_low
+    # insert high values
+    if high_prf_loc_str == 'EVENS':
+        prt[1::2] =  prt_high
+    elif high_prf_loc_str == 'ODDS':
+        prt[::2] = prt_high
+
+    return prt
 
 def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: float) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -292,6 +323,9 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     ds_how = hfile[f"/{dataset}/how"]
     for k in {"NI", "highprf", "product", "prt", "rapic_UNFOLDING", "rapic_HIPRF"} & ds_how.attrs.keys():
         metadata[k] = ds_how.attrs[k]
+    # generate prt array from rapic metadata (support legacy dual prf metadata)
+    if all(k in dataset[sweep_idx].attrs for k in ("rapic_HIPRF","rapic_UNFOLDING", "highprf")):
+        metadata['prt'] = prt_from_rapic_metadata(metadata)
 
     sdate = hfile[f"/{dataset}/what"].attrs["startdate"].decode("utf-8")
     stime = hfile[f"/{dataset}/what"].attrs["starttime"].decode("utf-8")
