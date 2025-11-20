@@ -325,7 +325,10 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
         metadata[k] = ds_how.attrs[k]
     # generate prt array from rapic metadata (support legacy dual prf metadata)
     if all(k in dataset[sweep_idx].attrs for k in ("rapic_HIPRF","rapic_UNFOLDING", "highprf")):
-        metadata['prt'] = prt_from_rapic_metadata(metadata)
+        try:
+            metadata['prt'] = prt_from_rapic_metadata(metadata)
+        except Exception as e:
+            warnings.warn(f"Failed to build PRT array from legacy metadata due to error: {e}")
 
     sdate = hfile[f"/{dataset}/what"].attrs["startdate"].decode("utf-8")
     stime = hfile[f"/{dataset}/what"].attrs["starttime"].decode("utf-8")
