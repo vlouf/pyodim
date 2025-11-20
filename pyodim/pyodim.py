@@ -33,7 +33,7 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 
-def prt_from_rapic_metadata(metadata) -> np.ndarray:
+def prt_from_rapic_metadata(metadata, nrays) -> np.ndarray:
     """
     Generate PRT value for each ray using the legacy rapic metadata
 
@@ -41,6 +41,8 @@ def prt_from_rapic_metadata(metadata) -> np.ndarray:
     ===========
     metadata: dict
         sweep metadata
+    nrays: int
+        number of rays in the sweep
 
     Returns:
     prt: ndarray
@@ -56,7 +58,7 @@ def prt_from_rapic_metadata(metadata) -> np.ndarray:
     prt_high = 1/metadata['highprf']
     prt_low = prt_high*prt_ratio
     # initialise prt array with low prt values
-    prt = np.zeros_like(sweep["azimuth"]) + prt_low
+    prt = np.zeros(nrays) + prt_low
     # insert high values
     if high_prf_loc_str == 'EVENS':
         prt[1::2] =  prt_high
@@ -323,12 +325,6 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     ds_how = hfile[f"/{dataset}/how"]
     for k in {"NI", "highprf", "product", "prt", "rapic_UNFOLDING", "rapic_HIPRF"} & ds_how.attrs.keys():
         metadata[k] = ds_how.attrs[k]
-    # generate prt array from rapic metadata (support legacy dual prf metadata)
-    if all(k in dataset[sweep_idx].attrs for k in ("rapic_HIPRF","rapic_UNFOLDING", "highprf")):
-        try:
-            metadata['prt'] = prt_from_rapic_metadata(metadata)
-        except Exception as e:
-            warnings.warn(f"Failed to build PRT array from legacy metadata due to error: {e}")
 
     sdate = hfile[f"/{dataset}/what"].attrs["startdate"].decode("utf-8")
     stime = hfile[f"/{dataset}/what"].attrs["starttime"].decode("utf-8")
@@ -351,6 +347,13 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     coordinates_metadata["nbins"] = hfile[f"/{dataset}/where"].attrs["nbins"]
 
     coordinates_metadata["elangle"] = hfile[f"/{dataset}/where"].attrs["elangle"]
+
+    # generate prt array from rapic metadata (support legacy dual prf metadata)
+    if all(k in metadata.keys() for k in ("rapic_HIPRF", "rapic_UNFOLDING", "highprf")):
+        try:
+            metadata['prt'] = prt_from_rapic_metadata(metadata, coordinates_metadata["nrays"])
+        except Exception as e:
+            warnings.warn(f"Failed to build PRT array from legacy metadata due to error: {e}", UserWarning)
 
     return metadata, coordinates_metadata
 
@@ -540,7 +543,7 @@ def read_odim_slice_h5(
         elif isinstance(hqtt, str):
             name = hqtt
         else:
-            warnings.warn(f"Unknown type {type(hqtt)} for quantity attribute: {hqtt!r}.")
+            warnings.warn(f"Unknown type {type(hqtt)} for quantity attribute: {hqtt!r}.", UserWarning)
             continue
 
         # Check if field should be read.
