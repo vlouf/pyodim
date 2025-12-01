@@ -353,7 +353,7 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
         try:
             metadata['prt'] = prt_from_rapic_metadata(metadata, coordinates_metadata["nrays"])
         except Exception as e:
-            warnings.warn(f"Failed to build PRT array from legacy metadata due to error: {e}", UserWarning)
+            warnings.warn(f"Failed to build PRT array for {dataset} from legacy metadata due to error: {e}", UserWarning)
 
     return metadata, coordinates_metadata
 
