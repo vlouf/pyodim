@@ -5,7 +5,7 @@ Natively reading ODIM H5 radar files in Python.
 @author: Valentin Louf <valentin.louf@bom.gov.au>
 @institutions: Bureau of Meteorology and Monash University.
 @creation: 21/01/2020
-@date: 13/11/2025
+@date: 1/12/2025
 
 .. autosummary::
     :toctree: generated/
@@ -24,7 +24,7 @@ Natively reading ODIM H5 radar files in Python.
 import warnings
 import datetime
 import traceback
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import dask
 import h5py
@@ -33,7 +33,8 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 
-def prt_from_rapic_metadata(metadata, nrays) -> np.ndarray:
+
+def prt_from_rapic_metadata(metadata: Dict, nrays: int) -> Union[np.ndarray, None]:
     """
     Generate PRT value for each ray using the legacy rapic metadata
 
@@ -48,27 +49,28 @@ def prt_from_rapic_metadata(metadata, nrays) -> np.ndarray:
     prt: ndarray
         PRT of each gate
     """
-    
-    prf_ratio_str = metadata['rapic_UNFOLDING'].decode('ascii')
-    high_prf_loc_str = metadata['rapic_HIPRF'].decode('ascii')
-    #abort if metadata is incomplete
-    if prf_ratio_str == 'None' or high_prf_loc_str == 'None':
+
+    prf_ratio_str = metadata["rapic_UNFOLDING"].decode("ascii")
+    high_prf_loc_str = metadata["rapic_HIPRF"].decode("ascii")
+    # abort if metadata is incomplete
+    if prf_ratio_str == "None" or high_prf_loc_str == "None":
         return None
     # calculate prt ratio, high prt and low prt
     ratio_lhs = float(prf_ratio_str[0])
     ratio_rhs = float(prf_ratio_str[2])
-    prt_ratio = ratio_rhs/ratio_lhs
-    prt_high = 1/metadata['highprf']
-    prt_low = prt_high*prt_ratio
+    prt_ratio = ratio_rhs / ratio_lhs
+    prt_high = 1 / metadata["highprf"]
+    prt_low = prt_high * prt_ratio
     # initialise prt array with low prt values
     prt = np.zeros(nrays) + prt_low
     # insert high values
-    if high_prf_loc_str == 'EVENS':
-        prt[1::2] =  prt_high
-    elif high_prf_loc_str == 'ODDS':
+    if high_prf_loc_str == "EVENS":
+        prt[1::2] = prt_high
+    elif high_prf_loc_str == "ODDS":
         prt[::2] = prt_high
 
     return prt
+
 
 def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: float) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -326,7 +328,7 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
 
     # General metadata
     ds_how = hfile[f"/{dataset}/how"]
-    metadata['prt'] = None  # initialize prt key
+    metadata["prt"] = None  # initialize prt key
     for k in {"NI", "highprf", "product", "prt", "rapic_UNFOLDING", "rapic_HIPRF"} & ds_how.attrs.keys():
         metadata[k] = ds_how.attrs[k]
 
@@ -355,9 +357,11 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     # generate prt array from rapic metadata (support legacy dual prf metadata)
     if all(k in metadata.keys() for k in ("rapic_HIPRF", "rapic_UNFOLDING", "highprf")):
         try:
-            metadata['prt'] = prt_from_rapic_metadata(metadata, coordinates_metadata["nrays"])
+            metadata["prt"] = prt_from_rapic_metadata(metadata, coordinates_metadata["nrays"])
         except Exception as e:
-            warnings.warn(f"Failed to build PRT array for {dataset} from legacy metadata due to error: {e}", UserWarning)
+            warnings.warn(
+                f"Failed to build PRT array for {dataset} from legacy metadata due to error: {e}", UserWarning
+            )
 
     return metadata, coordinates_metadata
 
@@ -470,7 +474,7 @@ def read_odim_slice_h5(
     include_fields: List = [],
     exclude_fields: List = [],
     check_nyq: bool = False,
-    **kwargs
+    **kwargs,
 ) -> xr.Dataset:
     """
     Read a single sweep (slice) from an ODIM HDF5 radar file.
@@ -565,7 +569,7 @@ def read_odim_slice_h5(
             warnings.warn(
                 "Duplicate field 'DBZH' found in sweep. Using last occurrence. "
                 "This indicates a potential issue with the ODIM file.",
-                UserWarning
+                UserWarning,
             )
             dataset = dataset.merge({name: (("azimuth", "range"), data_value)}, compat="override")
 
@@ -709,4 +713,3 @@ def write_odim_str_attrib(group, attrib_name: str, text: str) -> None:
     att_id.write(text_array)
 
     return None
-
