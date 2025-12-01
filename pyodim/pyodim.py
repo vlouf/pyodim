@@ -33,6 +33,39 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 
+def prt_from_rapic_metadata(metadata, nrays) -> np.ndarray:
+    """
+    Generate PRT value for each ray using the legacy rapic metadata
+
+    Parameters:
+    ===========
+    metadata: dict
+        sweep metadata
+    nrays: int
+        number of rays in the sweep
+
+    Returns:
+    prt: ndarray
+        PRT of each gate
+    """
+    
+    prf_ratio_str = metadata['rapic_UNFOLDING'].decode('ascii')
+    high_prf_loc_str = metadata['rapic_HIPRF'].decode('ascii')
+    # calculate prt ratio, high prt and low prt
+    ratio_lhs = float(prf_ratio_str[0])
+    ratio_rhs = float(prf_ratio_str[2])
+    prt_ratio = ratio_rhs/ratio_lhs
+    prt_high = 1/metadata['highprf']
+    prt_low = prt_high*prt_ratio
+    # initialise prt array with low prt values
+    prt = np.zeros(nrays) + prt_low
+    # insert high values
+    if high_prf_loc_str == 'EVENS':
+        prt[1::2] =  prt_high
+    elif high_prf_loc_str == 'ODDS':
+        prt[::2] = prt_high
+
+    return prt
 
 def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: float) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -315,6 +348,13 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
 
     coordinates_metadata["elangle"] = hfile[f"/{dataset}/where"].attrs["elangle"]
 
+    # generate prt array from rapic metadata (support legacy dual prf metadata)
+    if all(k in metadata.keys() for k in ("rapic_HIPRF", "rapic_UNFOLDING", "highprf")):
+        try:
+            metadata['prt'] = prt_from_rapic_metadata(metadata, coordinates_metadata["nrays"])
+        except Exception as e:
+            warnings.warn(f"Failed to build PRT array for {dataset} from legacy metadata due to error: {e}", UserWarning)
+
     return metadata, coordinates_metadata
 
 
@@ -503,7 +543,7 @@ def read_odim_slice_h5(
         elif isinstance(hqtt, str):
             name = hqtt
         else:
-            warnings.warn(f"Unknown type {type(hqtt)} for quantity attribute: {hqtt!r}.")
+            warnings.warn(f"Unknown type {type(hqtt)} for quantity attribute: {hqtt!r}.", UserWarning)
             continue
 
         # Check if field should be read.
