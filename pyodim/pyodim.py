@@ -51,6 +51,9 @@ def prt_from_rapic_metadata(metadata, nrays) -> np.ndarray:
     
     prf_ratio_str = metadata['rapic_UNFOLDING'].decode('ascii')
     high_prf_loc_str = metadata['rapic_HIPRF'].decode('ascii')
+    #abort if metadata is incomplete
+    if prf_ratio_str == 'None' or high_prf_loc_str == 'None':
+        return None
     # calculate prt ratio, high prt and low prt
     ratio_lhs = float(prf_ratio_str[0])
     ratio_rhs = float(prf_ratio_str[2])
@@ -323,6 +326,7 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
 
     # General metadata
     ds_how = hfile[f"/{dataset}/how"]
+    metadata['prt'] = None  # initialize prt key
     for k in {"NI", "highprf", "product", "prt", "rapic_UNFOLDING", "rapic_HIPRF"} & ds_how.attrs.keys():
         metadata[k] = ds_how.attrs[k]
 
