@@ -703,7 +703,7 @@ def read_odim(
         If lazy_load=False, returns computed xarray.Dataset objects.
     """
     # First, determine which sweeps to read
-    with h5py.File(odim_file, rw_mode) as hfile:
+    with h5py.File(odim_file, "r") as hfile:
         user_sweep = kwargs.get("nslice", None)
         nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
 
