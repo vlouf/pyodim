@@ -5,7 +5,7 @@ Natively reading ODIM H5 radar files in Python.
 @author: Valentin Louf <valentin.louf@bom.gov.au>
 @institutions: Bureau of Meteorology and Monash University.
 @creation: 21/01/2020
-@date: 13/11/2025
+@date: 2/12/2025
 
 .. autosummary::
     :toctree: generated/
@@ -33,6 +33,7 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 
+
 def prt_from_rapic_metadata(metadata, nrays) -> np.ndarray:
     """
     Generate PRT value for each ray using the legacy rapic metadata
@@ -48,27 +49,28 @@ def prt_from_rapic_metadata(metadata, nrays) -> np.ndarray:
     prt: ndarray
         PRT of each gate
     """
-    
-    prf_ratio_str = metadata['rapic_UNFOLDING'].decode('ascii')
-    high_prf_loc_str = metadata['rapic_HIPRF'].decode('ascii')
-    #abort if metadata is incomplete
-    if prf_ratio_str == 'None' or high_prf_loc_str == 'None':
+
+    prf_ratio_str = metadata["rapic_UNFOLDING"].decode("ascii")
+    high_prf_loc_str = metadata["rapic_HIPRF"].decode("ascii")
+    # abort if metadata is incomplete
+    if prf_ratio_str == "None" or high_prf_loc_str == "None":
         return None
     # calculate prt ratio, high prt and low prt
     ratio_lhs = float(prf_ratio_str[0])
     ratio_rhs = float(prf_ratio_str[2])
-    prt_ratio = ratio_rhs/ratio_lhs
-    prt_high = 1/metadata['highprf']
-    prt_low = prt_high*prt_ratio
+    prt_ratio = ratio_rhs / ratio_lhs
+    prt_high = 1 / metadata["highprf"]
+    prt_low = prt_high * prt_ratio
     # initialise prt array with low prt values
     prt = np.zeros(nrays) + prt_low
     # insert high values
-    if high_prf_loc_str == 'EVENS':
-        prt[1::2] =  prt_high
-    elif high_prf_loc_str == 'ODDS':
+    if high_prf_loc_str == "EVENS":
+        prt[1::2] = prt_high
+    elif high_prf_loc_str == "ODDS":
         prt[::2] = prt_high
 
     return prt
+
 
 def cartesian_to_geographic(x: np.ndarray, y: np.ndarray, lon0: float, lat0: float) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -326,7 +328,7 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
 
     # General metadata
     ds_how = hfile[f"/{dataset}/how"]
-    metadata['prt'] = None  # initialize prt key
+    metadata["prt"] = None  # initialize prt key
     for k in {"NI", "highprf", "product", "prt", "rapic_UNFOLDING", "rapic_HIPRF"} & ds_how.attrs.keys():
         metadata[k] = ds_how.attrs[k]
 
@@ -355,9 +357,11 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     # generate prt array from rapic metadata (support legacy dual prf metadata)
     if all(k in metadata.keys() for k in ("rapic_HIPRF", "rapic_UNFOLDING", "highprf")):
         try:
-            metadata['prt'] = prt_from_rapic_metadata(metadata, coordinates_metadata["nrays"])
+            metadata["prt"] = prt_from_rapic_metadata(metadata, coordinates_metadata["nrays"])
         except Exception as e:
-            warnings.warn(f"Failed to build PRT array for {dataset} from legacy metadata due to error: {e}", UserWarning)
+            warnings.warn(
+                f"Failed to build PRT array for {dataset} from legacy metadata due to error: {e}", UserWarning
+            )
 
     return metadata, coordinates_metadata
 
@@ -470,7 +474,7 @@ def read_odim_slice_h5(
     include_fields: List = [],
     exclude_fields: List = [],
     check_nyq: bool = False,
-    **kwargs
+    **kwargs,
 ) -> xr.Dataset:
     """
     Read a single sweep (slice) from an ODIM HDF5 radar file.
@@ -499,8 +503,6 @@ def read_odim_slice_h5(
         - Time dimension
         - Metadata attributes (root and sweep-specific)
     """
-    # if nslice == 0:
-    #     raise ValueError('Slice numbering start at 1.')
     if type(include_fields) is not list:
         raise TypeError("Argument `include_fields` should be a list")
 
@@ -518,9 +520,8 @@ def read_odim_slice_h5(
     rootkey = sorted_keys[nslice]
 
     # Retrieve dataset metadata and coordinates metadata.
-    metadata, coordinates_metadata = get_dataset_metadata(hfile, rootkey)
-    # remember tilt id
-    metadata["id"] = rootkey
+    metadata, coordinates_metadata = get_dataset_metadata(hfile, rootkey)    
+    metadata["id"] = rootkey  # Remember sweep id
 
     dataset = xr.Dataset()
     dataset.attrs = get_root_metadata(hfile)
@@ -565,7 +566,7 @@ def read_odim_slice_h5(
             warnings.warn(
                 "Duplicate field 'DBZH' found in sweep. Using last occurrence. "
                 "This indicates a potential issue with the ODIM file.",
-                UserWarning
+                UserWarning,
             )
             dataset = dataset.merge({name: (("azimuth", "range"), data_value)}, compat="override")
 
@@ -596,6 +597,15 @@ def read_odim_slice_h5(
     return dataset
 
 
+def _read_odim_slice_from_file(odim_file: str, nslice: int, **kwargs) -> xr.Dataset:
+    """
+    Internal helper: Read a single slice by opening the file internally.
+    This ensures the file is properly closed after reading.
+    """
+    with h5py.File(odim_file, "r") as hfile:
+        return read_odim_slice_h5(hfile, nslice, **kwargs)
+
+
 def read_write_odim(
     odim_file: str,
     lazy_load: bool = True,
@@ -603,7 +613,8 @@ def read_write_odim(
     **kwargs,
 ) -> Tuple[List[xr.Dataset], h5py.File]:
     """
-    Read one or multiple sweeps from an ODIM HDF5 radar file, optionally lazily, and return both the data and the file handle.
+    Read one or multiple sweeps from an ODIM HDF5 radar file, optionally lazily,
+    and return both the data and the file handle.
 
     Parameters
     ----------
@@ -627,6 +638,10 @@ def read_write_odim(
             Radar sweeps ordered by elevation angle.
         hfile : h5py.File
             Open file handle for further inspection or modification.
+
+    Note
+    ----
+    The caller is responsible for closing the returned file handle.
     """
     rw_mode = "r+" if read_write else "r"
     hfile = h5py.File(odim_file, rw_mode)
@@ -636,10 +651,9 @@ def read_write_odim(
 
     radar = []
     if user_sweep is not None:
-
         kwargs.pop("nslice", None)  # Prevent duplicate argument
-        # print(f"User asked for sweep #{user_sweep}")
         if user_sweep < 0 or user_sweep >= nsweep:
+            hfile.close()
             raise ValueError(f"sweep index {user_sweep} out of range (0-{nsweep-1})")
 
         # Only process the requested sweep
@@ -663,23 +677,59 @@ def read_odim(
     **kwargs,
 ) -> List[xr.Dataset]:
     """
-    Convenience wrapper to read radar sweeps from an ODIM HDF5 file and return them as a list of xarray.Dataset objects.
+    Convenience wrapper to read radar sweeps from an ODIM HDF5 file and return them
+    as a list of xarray.Dataset objects.
+
+    This function is thread-safe and properly manages file handles.
 
     Parameters
     ----------
     odim_file : str
         Path to the ODIM HDF5 radar file.
     lazy_load : bool, optional
-        If True, returns Dask-delayed objects for lazy evaluation. If False, directly load all the data in memory and returns the list of xarray.
+        If True, returns Dask-delayed objects for lazy evaluation. If False, directly
+        load all the data in memory and returns the list of xarray.
     **kwargs
-        Passed to `read_write_odim` (e.g., nslice, include_fields, exclude_fields).
+        Additional arguments such as:
+        - nslice (int): Specific sweep index to read.
+        - include_fields (list of str): Fields to include.
+        - exclude_fields (list of str): Fields to exclude.
 
     Returns
     -------
-    list of xr.Dataset
+    list of xr.Dataset or list of dask.delayed
         Radar sweeps ordered by elevation angle, each as an xarray.Dataset.
+        If lazy_load=True, returns delayed objects that open/close the file independently.
+        If lazy_load=False, returns computed xarray.Dataset objects.
     """
-    (radar, _) = read_write_odim(odim_file, lazy_load=lazy_load, **kwargs)
+    # First, determine which sweeps to read
+    with h5py.File(odim_file, rw_mode) as hfile:
+        user_sweep = kwargs.get("nslice", None)
+        nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
+
+        if user_sweep is not None:
+            if user_sweep < 0 or user_sweep >= nsweep:
+                raise ValueError(f"sweep index {user_sweep} out of range (0-{nsweep-1})")
+            sweeps_to_read = [user_sweep]
+        else:
+            sweeps_to_read = list(range(nsweep))
+
+    # Remove nslice from kwargs to avoid passing it to the slice reader
+    kwargs_copy = kwargs.copy()
+    kwargs_copy.pop("nslice", None)
+
+    # Create delayed tasks or read immediately
+    radar = []
+    for sweep in sweeps_to_read:
+        if lazy_load:
+            # Each delayed task will open and close the file independently
+            c = dask.delayed(_read_odim_slice_from_file)(odim_file, sweep, **kwargs_copy)
+            radar.append(c)
+        else:
+            # Read immediately with proper file handling
+            dataset = _read_odim_slice_from_file(odim_file, sweep, **kwargs_copy)
+            radar.append(dataset)
+
     return radar
 
 
@@ -709,4 +759,3 @@ def write_odim_str_attrib(group, attrib_name: str, text: str) -> None:
     att_id.write(text_array)
 
     return None
-
