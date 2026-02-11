@@ -329,7 +329,7 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     # General metadata
     ds_how = hfile[f"/{dataset}/how"]
     metadata["prt"] = None  # initialize prt key
-    for k in {"NI", "highprf", "product", "prt", "rapic_UNFOLDING", "rapic_HIPRF"} & ds_how.attrs.keys():
+    for k in {"NI", "highprf", "product", "prt", "rapic_UNFOLDING", "rapic_HIPRF", "lowprf"} & ds_how.attrs.keys():
         metadata[k] = ds_how.attrs[k]
 
     sdate = hfile[f"/{dataset}/what"].attrs["startdate"].decode("utf-8")
@@ -347,11 +347,9 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
         coordinates_metadata["astart"] = 0
     coordinates_metadata["a1gate"] = hfile[f"/{dataset}/where"].attrs["a1gate"]
     coordinates_metadata["nrays"] = hfile[f"/{dataset}/where"].attrs["nrays"]
-
     coordinates_metadata["rstart"] = hfile[f"/{dataset}/where"].attrs["rstart"]
     coordinates_metadata["rscale"] = hfile[f"/{dataset}/where"].attrs["rscale"]
     coordinates_metadata["nbins"] = hfile[f"/{dataset}/where"].attrs["nbins"]
-
     coordinates_metadata["elangle"] = hfile[f"/{dataset}/where"].attrs["elangle"]
 
     # generate prt array from rapic metadata (support legacy dual prf metadata)
@@ -520,7 +518,7 @@ def read_odim_slice_h5(
     rootkey = sorted_keys[nslice]
 
     # Retrieve dataset metadata and coordinates metadata.
-    metadata, coordinates_metadata = get_dataset_metadata(hfile, rootkey)    
+    metadata, coordinates_metadata = get_dataset_metadata(hfile, rootkey)
     metadata["id"] = rootkey  # Remember sweep id
 
     dataset = xr.Dataset()
