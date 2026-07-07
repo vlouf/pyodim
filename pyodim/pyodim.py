@@ -24,6 +24,7 @@ Natively reading ODIM H5 radar files in Python.
 import warnings
 import datetime
 import traceback
+import re
 from typing import Dict, List, Tuple
 
 import dask
@@ -32,6 +33,43 @@ import pyproj
 import pandas as pd
 import numpy as np
 import xarray as xr
+
+
+def _parse_odim_version(version_text: str) -> float:
+    """Extract numeric ODIM version (e.g. 2.4) from free-form text."""
+    if not version_text:
+        return None
+
+    match = re.search(r"(\d+)[._](\d+)", version_text)
+    if match is None:
+        return None
+
+    return float(f"{int(match.group(1))}.{int(match.group(2))}")
+
+
+def normalize_rstart_m(rstart: float, version: str = None, conventions: str = None) -> float:
+    """
+    Normalize ODIM `rstart` to meters.
+
+    ODIM <= 2.3 encoded `rstart` in kilometers while ODIM >= 2.4 uses meters.
+    If version cannot be parsed, fallback to a pragmatic heuristic:
+    values < 10 are assumed to be km, otherwise meters.
+    """
+    version_candidates = [version, conventions]
+    for candidate in version_candidates:
+        parsed = _parse_odim_version(candidate)
+        if parsed is None:
+            continue
+        if parsed < 2.4:
+            return 1e3 * float(rstart)
+        return float(rstart)
+
+    # Fallback for malformed/missing metadata.
+    rstart = float(rstart)
+    if rstart < 10:
+        return 1e3 * rstart
+
+    return rstart
 
 
 def prt_from_rapic_metadata(metadata, nrays) -> np.ndarray:
@@ -145,8 +183,12 @@ def coord_from_metadata(metadata: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndar
     da = 360 / metadata["nrays"]
     azimuth = np.linspace(metadata["astart"] + da / 2, 360 - da, metadata["nrays"], dtype=np.float32)
 
-    # rstart is in KM !!! STUPID.
-    rstart_center = 1e3 * metadata["rstart"] + metadata["rscale"] / 2
+    rstart_m = normalize_rstart_m(
+        metadata["rstart"],
+        version=metadata.get("version"),
+        conventions=metadata.get("Conventions"),
+    )
+    rstart_center = rstart_m + metadata["rscale"] / 2
     r = np.arange(
         rstart_center, rstart_center + metadata["nbins"] * metadata["rscale"], metadata["rscale"], dtype=np.float32
     )
@@ -351,6 +393,9 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     coordinates_metadata["rstart"] = hfile[f"/{dataset}/where"].attrs["rstart"]
     coordinates_metadata["rscale"] = hfile[f"/{dataset}/where"].attrs["rscale"]
     coordinates_metadata["nbins"] = hfile[f"/{dataset}/where"].attrs["nbins"]
+    # Keep root ODIM identifiers so range coordinate generation can normalize units safely.
+    coordinates_metadata["version"] = hfile["/what"].attrs["version"].decode("utf-8")
+    coordinates_metadata["Conventions"] = hfile.attrs["Conventions"].decode("utf-8")
 
     coordinates_metadata["elangle"] = hfile[f"/{dataset}/where"].attrs["elangle"]
 

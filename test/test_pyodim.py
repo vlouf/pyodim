@@ -4,7 +4,9 @@ import pytest
 from pyodim import read_odim
 from pyodim.pyodim import (
     check_nyquist,
-    write_odim_str_attrib
+    write_odim_str_attrib,
+    normalize_rstart_m,
+    coord_from_metadata,
 )
 import h5py
 import tempfile
@@ -305,3 +307,49 @@ def test_write_odim_str_attrib():
             # Verify
             assert 'source' in grp.attrs
             assert grp.attrs['source'] == b'WMO:12345' or grp.attrs['source'] == 'WMO:12345'
+
+
+def test_normalize_rstart_old_odim_version_km_to_m():
+    """ODIM 2.3 should interpret rstart as km."""
+    assert normalize_rstart_m(1.0, version="H5rad 2.3") == 1000.0
+
+
+def test_normalize_rstart_new_odim_version_keeps_meters():
+    """ODIM 2.4 should interpret rstart as meters."""
+    assert normalize_rstart_m(1000.0, version="H5rad 2.4") == 1000.0
+
+
+def test_normalize_rstart_fallback_heuristic():
+    """Fallback keeps large values as meters and treats small values as km."""
+    assert normalize_rstart_m(1.0) == 1000.0
+    assert normalize_rstart_m(1000.0) == 1000.0
+
+
+def test_coord_from_metadata_uses_normalized_rstart():
+    """Range coordinate should start at gate center in meters for both encodings."""
+    metadata_km = {
+        "astart": 0,
+        "nrays": 360,
+        "nbins": 4,
+        "rstart": 1.0,
+        "rscale": 250.0,
+        "elangle": 0.5,
+        "version": "H5rad 2.3",
+        "Conventions": "ODIM_H5/V2_3",
+    }
+    metadata_m = {
+        "astart": 0,
+        "nrays": 360,
+        "nbins": 4,
+        "rstart": 1000.0,
+        "rscale": 250.0,
+        "elangle": 0.5,
+        "version": "H5rad 2.4",
+        "Conventions": "ODIM_H5/V2_4",
+    }
+
+    r_km, _, _ = coord_from_metadata(metadata_km)
+    r_m, _, _ = coord_from_metadata(metadata_m)
+
+    assert r_km[0] == pytest.approx(1125.0)
+    assert r_m[0] == pytest.approx(1125.0)
