@@ -5,7 +5,7 @@ from pyodim import read_odim
 from pyodim.pyodim import (
     check_nyquist,
     write_odim_str_attrib,
-    normalize_rstart_m,
+    get_dataset_metadata,
     coord_from_metadata,
 )
 import h5py
@@ -309,20 +309,64 @@ def test_write_odim_str_attrib():
             assert grp.attrs['source'] == b'WMO:12345' or grp.attrs['source'] == 'WMO:12345'
 
 
-def test_normalize_rstart_old_odim_version_km_to_m():
-    """ODIM 2.3 should interpret rstart as km."""
-    assert normalize_rstart_m(1.0, version="H5rad 2.3") == 1000.0
+def test_get_dataset_metadata_normalizes_small_rstart_to_meters():
+    """Read-time metadata extraction should convert small rstart values from km to m."""
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        with h5py.File(tmp_file.name, 'w') as h5_file:
+            h5_file.attrs['Conventions'] = np.bytes_('ODIM_H5/V2_4')
+
+            root_what = h5_file.create_group('/what')
+            root_what.attrs['version'] = np.bytes_('H5rad 2.4')
+
+            dataset = h5_file.create_group('/dataset1')
+            ds_how = dataset.create_group('how')
+            ds_what = dataset.create_group('what')
+            ds_where = dataset.create_group('where')
+
+            ds_what.attrs['startdate'] = np.bytes_('20240101')
+            ds_what.attrs['starttime'] = np.bytes_('000000')
+            ds_what.attrs['enddate'] = np.bytes_('20240101')
+            ds_what.attrs['endtime'] = np.bytes_('000100')
+
+            ds_where.attrs['a1gate'] = 0
+            ds_where.attrs['nrays'] = 360
+            ds_where.attrs['rstart'] = 1.0
+            ds_where.attrs['rscale'] = 250.0
+            ds_where.attrs['nbins'] = 4
+            ds_where.attrs['elangle'] = 0.5
+
+            _, coordinates_metadata = get_dataset_metadata(h5_file, 'dataset1')
+            assert coordinates_metadata['rstart'] == pytest.approx(1000.0)
 
 
-def test_normalize_rstart_new_odim_version_keeps_meters():
-    """ODIM 2.4 should interpret rstart as meters."""
-    assert normalize_rstart_m(1000.0, version="H5rad 2.4") == 1000.0
+def test_get_dataset_metadata_keeps_large_rstart_in_meters():
+    """Read-time metadata extraction should keep large rstart values as meters."""
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        with h5py.File(tmp_file.name, 'w') as h5_file:
+            h5_file.attrs['Conventions'] = np.bytes_('ODIM_H5/V2_4')
 
+            root_what = h5_file.create_group('/what')
+            root_what.attrs['version'] = np.bytes_('H5rad 2.4')
 
-def test_normalize_rstart_fallback_heuristic():
-    """Fallback keeps large values as meters and treats small values as km."""
-    assert normalize_rstart_m(1.0) == 1000.0
-    assert normalize_rstart_m(1000.0) == 1000.0
+            dataset = h5_file.create_group('/dataset1')
+            ds_how = dataset.create_group('how')
+            ds_what = dataset.create_group('what')
+            ds_where = dataset.create_group('where')
+
+            ds_what.attrs['startdate'] = np.bytes_('20240101')
+            ds_what.attrs['starttime'] = np.bytes_('000000')
+            ds_what.attrs['enddate'] = np.bytes_('20240101')
+            ds_what.attrs['endtime'] = np.bytes_('000100')
+
+            ds_where.attrs['a1gate'] = 0
+            ds_where.attrs['nrays'] = 360
+            ds_where.attrs['rstart'] = 1000.0
+            ds_where.attrs['rscale'] = 250.0
+            ds_where.attrs['nbins'] = 4
+            ds_where.attrs['elangle'] = 0.5
+
+            _, coordinates_metadata = get_dataset_metadata(h5_file, 'dataset1')
+            assert coordinates_metadata['rstart'] == pytest.approx(1000.0)
 
 
 def test_coord_from_metadata_uses_normalized_rstart():
@@ -331,11 +375,9 @@ def test_coord_from_metadata_uses_normalized_rstart():
         "astart": 0,
         "nrays": 360,
         "nbins": 4,
-        "rstart": 1.0,
+        "rstart": 1000.0,
         "rscale": 250.0,
         "elangle": 0.5,
-        "version": "H5rad 2.3",
-        "Conventions": "ODIM_H5/V2_3",
     }
     metadata_m = {
         "astart": 0,
@@ -344,8 +386,6 @@ def test_coord_from_metadata_uses_normalized_rstart():
         "rstart": 1000.0,
         "rscale": 250.0,
         "elangle": 0.5,
-        "version": "H5rad 2.4",
-        "Conventions": "ODIM_H5/V2_4",
     }
 
     r_km, _, _ = coord_from_metadata(metadata_km)
