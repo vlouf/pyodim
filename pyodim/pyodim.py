@@ -145,8 +145,7 @@ def coord_from_metadata(metadata: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndar
     da = 360 / metadata["nrays"]
     azimuth = np.linspace(metadata["astart"] + da / 2, 360 - da, metadata["nrays"], dtype=np.float32)
 
-    # rstart is in KM !!! STUPID.
-    rstart_center = 1e3 * metadata["rstart"] + metadata["rscale"] / 2
+    rstart_center = metadata["rstart"] + metadata["rscale"] / 2
     r = np.arange(
         rstart_center, rstart_center + metadata["nbins"] * metadata["rscale"], metadata["rscale"], dtype=np.float32
     )
@@ -348,7 +347,10 @@ def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
     coordinates_metadata["a1gate"] = hfile[f"/{dataset}/where"].attrs["a1gate"]
     coordinates_metadata["nrays"] = hfile[f"/{dataset}/where"].attrs["nrays"]
 
-    coordinates_metadata["rstart"] = hfile[f"/{dataset}/where"].attrs["rstart"]
+    rstart = float(hfile[f"/{dataset}/where"].attrs["rstart"])
+    if rstart < 10:  # convert to meters if in km (legacy ODIM files) - units are unreliable in legacy ODIM 
+        rstart *= 1e3
+    coordinates_metadata["rstart"] = rstart
     coordinates_metadata["rscale"] = hfile[f"/{dataset}/where"].attrs["rscale"]
     coordinates_metadata["nbins"] = hfile[f"/{dataset}/where"].attrs["nbins"]
 
