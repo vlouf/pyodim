@@ -25,7 +25,8 @@ import warnings
 import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
-import dask
+from dask import delayed
+import dask.array as da
 import h5py
 import pyproj
 import pandas as pd
@@ -485,6 +486,8 @@ def read_odim_slice_h5(
     exclude_fields: Optional[Sequence[str]] = None,
     check_nyq: bool = False,
     max_field_elements: Optional[int] = 50_000_000,
+    use_dask_arrays: bool = False,
+    field_chunks: Optional[Tuple[int, int]] = None,
     **kwargs,
 ) -> xr.Dataset:
     """
@@ -596,8 +599,19 @@ def read_odim_slice_h5(
                 f"Field '{name}' shape {h5_data.shape} does not match expected {expected_shape}."
             )
 
-        data_value = h5_data[()].astype(np.float32, copy=False)
-        data_value = gain * np.ma.masked_equal(data_value, nodata) + offset
+        if use_dask_arrays:
+            chunks = field_chunks
+            if chunks is None:
+                chunks = (
+                    min(360, coordinates_metadata["nrays"]),
+                    min(1024, coordinates_metadata["nbins"]),
+                )
+            data_value = da.from_array(h5_data, chunks=chunks, lock=True)
+            data_value = da.ma.masked_equal(data_value, nodata)
+            data_value = np.float32(gain) * data_value.astype(np.float32) + np.float32(offset)
+        else:
+            data_value = h5_data[()].astype(np.float32, copy=False)
+            data_value = gain * np.ma.masked_equal(data_value, nodata) + offset
         if name in field_data:
             warnings.warn(
                 f"Duplicate field '{name}' found in sweep. Using last occurrence. "
@@ -658,20 +672,30 @@ def _read_odim_slice_from_file_mode(odim_file: str, mode: str, nslice: int, **kw
 
 def read_write_odim(
     odim_file: str,
-    lazy_load: bool = True,
+    lazy_load: Optional[bool] = None,
+    backend: Optional[str] = None,
+    compute: Optional[bool] = None,
     read_write: bool = False,
     **kwargs,
 ) -> Tuple[List[xr.Dataset], h5py.File]:
     """
-    Read one or multiple sweeps from an ODIM HDF5 radar file, optionally lazily,
-    and return both the data and the file handle.
+    Read one or multiple sweeps from an ODIM HDF5 radar file and return both
+    the data and the file handle.
 
     Parameters
     ----------
     odim_file : str
         Path to the ODIM HDF5 radar file.
     lazy_load : bool, optional
-        If True, returns Dask-delayed objects for lazy evaluation. If False, computes immediately.
+        Deprecated. Use `backend` + `compute` instead.
+    backend : {"dask", "numpy"}, optional
+        Controls how sweeps are produced:
+        - "dask": returns delayed sweep tasks.
+        - "numpy": reads sweeps immediately.
+        If omitted, preserves legacy behavior based on `lazy_load`.
+    compute : bool, optional
+        Convenience switch for `backend="dask"`.
+        If True, computes delayed sweeps before returning.
     read_write : bool, optional
         If True, opens the file in read-write mode ('r+'), otherwise read-only ('r').
     **kwargs
@@ -694,8 +718,40 @@ def read_write_odim(
     The caller is responsible for closing the returned file handle.
     """
     rw_mode = "r+" if read_write else "r"
-    if read_write and lazy_load:
-        raise ValueError("lazy_load=True is not supported with read_write=True due to HDF5 handle safety constraints.")
+
+    if backend is None:
+        if lazy_load is None:
+            backend = "dask"
+        else:
+            backend = "dask" if lazy_load else "numpy"
+            warnings.warn(
+                "`lazy_load` is deprecated and will be removed in a future release. "
+                "Use `backend='dask'|'numpy'` and `compute=True|False`.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+    else:
+        backend = backend.lower()
+        if backend not in {"dask", "numpy"}:
+            raise ValueError("Invalid backend. Expected one of: 'dask', 'numpy'.")
+        if lazy_load is not None:
+            warnings.warn(
+                "`lazy_load` is deprecated and ignored when `backend` is provided.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+    if read_write and backend == "dask":
+        raise ValueError("backend='dask' is not supported with read_write=True due to HDF5 handle safety constraints.")
+
+    if backend == "dask" and kwargs.get("use_dask_arrays", False):
+        raise ValueError(
+            "use_dask_arrays=True is not compatible with backend='dask'. "
+            "Use backend='numpy' with read_write_odim to keep file handles open for chunked dask-backed fields."
+        )
+
+    if compute is None:
+        compute = False if backend == "dask" else True
 
     hfile = h5py.File(odim_file, rw_mode)
 
@@ -710,26 +766,31 @@ def read_write_odim(
             raise ValueError(f"sweep index {user_sweep} out of range (0-{nsweep-1})")
 
         # Only process the requested sweep
-        if lazy_load:
-            c = dask.delayed(_read_odim_slice_from_file_mode)(odim_file, rw_mode, user_sweep, **kwargs)
+        if backend == "dask":
+            c = delayed(_read_odim_slice_from_file_mode)(odim_file, rw_mode, user_sweep, **kwargs)
             radar.append(c)
         else:
             radar.append(read_odim_slice_h5(hfile, user_sweep, **kwargs))
     else:
         # Process all sweeps
         for sweep in range(nsweep):
-            if lazy_load:
-                c = dask.delayed(_read_odim_slice_from_file_mode)(odim_file, rw_mode, sweep, **kwargs)
+            if backend == "dask":
+                c = delayed(_read_odim_slice_from_file_mode)(odim_file, rw_mode, sweep, **kwargs)
                 radar.append(c)
             else:
                 radar.append(read_odim_slice_h5(hfile, sweep, **kwargs))
+
+    if backend == "dask" and compute:
+        radar = [r.compute() for r in radar]
 
     return (radar, hfile)
 
 
 def read_odim(
     odim_file: str,
-    lazy_load: bool = True,
+    lazy_load: Optional[bool] = None,
+    backend: Optional[str] = None,
+    compute: Optional[bool] = None,
     **kwargs,
 ) -> List[xr.Dataset]:
     """
@@ -743,8 +804,15 @@ def read_odim(
     odim_file : str
         Path to the ODIM HDF5 radar file.
     lazy_load : bool, optional
-        If True, returns Dask-delayed objects for lazy evaluation. If False, directly
-        load all the data in memory and returns the list of xarray.
+        Deprecated. Use `backend` + `compute` instead.
+    backend : {"dask", "numpy"}, optional
+        Controls how sweeps are produced:
+        - "dask": returns delayed sweep tasks.
+        - "numpy": reads sweeps immediately.
+        If omitted, preserves legacy behavior based on `lazy_load`.
+    compute : bool, optional
+        Convenience switch for `backend="dask"`.
+        If True, computes delayed sweeps before returning.
     **kwargs
         Additional arguments such as:
         - nslice (int): Specific sweep index to read.
@@ -758,6 +826,37 @@ def read_odim(
         If lazy_load=True, returns delayed objects that open/close the file independently.
         If lazy_load=False, returns computed xarray.Dataset objects.
     """
+    if kwargs.get("use_dask_arrays", False):
+        raise ValueError(
+            "use_dask_arrays=True is not supported in read_odim because file handles are closed before return. "
+            "Use read_write_odim(..., backend='numpy', use_dask_arrays=True) instead."
+        )
+
+    if backend is None:
+        if lazy_load is None:
+            backend = "dask"
+        else:
+            backend = "dask" if lazy_load else "numpy"
+            warnings.warn(
+                "`lazy_load` is deprecated and will be removed in a future release. "
+                "Use `backend='dask'|'numpy'` and `compute=True|False`.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+    else:
+        backend = backend.lower()
+        if backend not in {"dask", "numpy"}:
+            raise ValueError("Invalid backend. Expected one of: 'dask', 'numpy'.")
+        if lazy_load is not None:
+            warnings.warn(
+                "`lazy_load` is deprecated and ignored when `backend` is provided.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+    if compute is None:
+        compute = False if backend == "dask" else True
+
     # First, determine which sweeps to read
     with h5py.File(odim_file, "r") as hfile:
         user_sweep = kwargs.get("nslice", None)
@@ -777,14 +876,17 @@ def read_odim(
     # Create delayed tasks or read immediately
     radar = []
     for sweep in sweeps_to_read:
-        if lazy_load:
+        if backend == "dask":
             # Each delayed task will open and close the file independently
-            c = dask.delayed(_read_odim_slice_from_file)(odim_file, sweep, **kwargs_copy)
+            c = delayed(_read_odim_slice_from_file)(odim_file, sweep, **kwargs_copy)
             radar.append(c)
         else:
             # Read immediately with proper file handling
             dataset = _read_odim_slice_from_file(odim_file, sweep, **kwargs_copy)
             radar.append(dataset)
+
+    if backend == "dask" and compute:
+        radar = [r.compute() for r in radar]
 
     return radar
 
