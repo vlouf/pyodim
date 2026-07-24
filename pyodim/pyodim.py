@@ -23,8 +23,7 @@ Natively reading ODIM H5 radar files in Python.
 
 import warnings
 import datetime
-import traceback
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import dask
 import h5py
@@ -113,14 +112,15 @@ def check_nyquist(dset: xr.Dataset) -> None:
 
     Raises:
     =======
-    AssertionError: If the Nyquist velocity is not consistent with the PRF.
+    ValueError: If the Nyquist velocity is not consistent with the PRF.
     """
     wavelength = dset.attrs["wavelength"]
     prf = dset.attrs["highprf"]
     nyquist = dset.attrs["NI"]
     ny_int = 1e-2 * prf * wavelength / 4
 
-    assert np.abs(nyquist - ny_int) < 0.5, "Nyquist not consistent with PRF"
+    if np.abs(nyquist - ny_int) >= 0.5:
+        raise ValueError("Nyquist not consistent with PRF")
 
 
 def coord_from_metadata(metadata: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -168,11 +168,19 @@ def copy_h5_data(h5_tilt, orig_id: str) -> str:
     orig_id: str
         The ID of the original data array to be copied.
     """
-    # current data_count
-    data_count = len([k for k in h5_tilt.keys() if k.startswith("data")])
+    if orig_id not in h5_tilt:
+        raise KeyError(f"Cannot copy missing field id '{orig_id}'.")
 
-    # use data_count for data_id
-    data_id = f"data{data_count + 1}"
+    existing_indices = [
+        int(k[4:])
+        for k in h5_tilt.keys()
+        if k.startswith("data") and k[4:].isdigit()
+    ]
+    next_index = (max(existing_indices) + 1) if existing_indices else 1
+    data_id = f"data{next_index}"
+    while data_id in h5_tilt:
+        next_index += 1
+        data_id = f"data{next_index}"
 
     # duplicate original
     h5_tilt.copy(orig_id, data_id)
@@ -473,9 +481,10 @@ def radar_coordinates_to_xyz(
 def read_odim_slice_h5(
     hfile: h5py.File,
     nslice: int,
-    include_fields: List = [],
-    exclude_fields: List = [],
+    include_fields: Optional[Sequence[str]] = None,
+    exclude_fields: Optional[Sequence[str]] = None,
     check_nyq: bool = False,
+    max_field_elements: Optional[int] = 50_000_000,
     **kwargs,
 ) -> xr.Dataset:
     """
@@ -505,12 +514,22 @@ def read_odim_slice_h5(
         - Time dimension
         - Metadata attributes (root and sweep-specific)
     """
-    if type(include_fields) is not list:
-        raise TypeError("Argument `include_fields` should be a list")
+    if include_fields is None:
+        include_fields = []
+    if exclude_fields is None:
+        exclude_fields = []
+    if not isinstance(include_fields, (list, tuple, set)):
+        raise TypeError("Argument `include_fields` should be a sequence of field names")
+    if not isinstance(exclude_fields, (list, tuple, set)):
+        raise TypeError("Argument `exclude_fields` should be a sequence of field names")
+
+    include_fields_set = set(include_fields)
+    exclude_fields_set = set(exclude_fields)
 
     # Number of sweep in dataset
     nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
-    assert nslice <= nsweep, f"Wrong slice number asked. Only {nsweep} available."
+    if nslice < 0 or nslice >= nsweep:
+        raise ValueError(f"Wrong slice number asked. Only {nsweep} available.")
 
     # Order datasets by increasing elevation and time
     sweeps = dict()
@@ -525,17 +544,17 @@ def read_odim_slice_h5(
     metadata, coordinates_metadata = get_dataset_metadata(hfile, rootkey)    
     metadata["id"] = rootkey  # Remember sweep id
 
-    dataset = xr.Dataset()
-    dataset.attrs = get_root_metadata(hfile)
-    dataset.attrs.update(metadata)
+    dataset_attrs = get_root_metadata(hfile)
+    dataset_attrs.update(metadata)
+
     if check_nyq:
         try:
-            check_nyquist(dataset)
-        except AssertionError:
-            print("Nyquist not consistent with PRF")
-        except Exception:
-            print("Error during Nyquist check:")
-            traceback.print_exc()
+            check_nyquist(xr.Dataset(attrs=dataset_attrs))
+        except ValueError as err:
+            warnings.warn(str(err), UserWarning)
+
+    field_data = {}
+    field_ids = {}
 
     for datakey in hfile[f"/{rootkey}"].keys():
         if not (datakey.startswith("data") or datakey.startswith("quality")):
@@ -554,24 +573,44 @@ def read_odim_slice_h5(
             continue
 
         # Check if field should be read.
-        if len(include_fields) > 0:
-            if name not in include_fields:
+        if len(include_fields_set) > 0:
+            if name not in include_fields_set:
                 continue
-        if name in exclude_fields:
+        if name in exclude_fields_set:
             continue
 
-        data_value = hfile[f"/{rootkey}/{datakey}/data"][:].astype(np.float32)
+        h5_data = hfile[f"/{rootkey}/{datakey}/data"]
+        if max_field_elements is not None and h5_data.size > max_field_elements:
+            raise ValueError(
+                f"Field '{name}' has {h5_data.size} elements, above max_field_elements={max_field_elements}."
+            )
+
+        if h5_data.ndim != 2:
+            raise ValueError(
+                f"Field '{name}' has ndim={h5_data.ndim}; expected 2 dimensions (azimuth, range)."
+            )
+
+        expected_shape = (coordinates_metadata["nrays"], coordinates_metadata["nbins"])
+        if h5_data.shape != expected_shape:
+            raise ValueError(
+                f"Field '{name}' shape {h5_data.shape} does not match expected {expected_shape}."
+            )
+
+        data_value = h5_data[()].astype(np.float32, copy=False)
         data_value = gain * np.ma.masked_equal(data_value, nodata) + offset
-        try:
-            dataset = dataset.merge({name: (("azimuth", "range"), data_value)})
-        except xr.MergeError:
+        if name in field_data:
             warnings.warn(
-                "Duplicate field 'DBZH' found in sweep. Using last occurrence. "
+                f"Duplicate field '{name}' found in sweep. Using last occurrence. "
                 "This indicates a potential issue with the ODIM file.",
                 UserWarning,
             )
-            dataset = dataset.merge({name: (("azimuth", "range"), data_value)}, compat="override")
 
+        field_data[name] = (("azimuth", "range"), data_value)
+        field_ids[name] = datakey
+
+    dataset = xr.Dataset(data_vars=field_data, attrs=dataset_attrs)
+
+    for name, datakey in field_ids.items():
         dataset[name].attrs = field_metadata(name)
         dataset[name].attrs["id"] = datakey
 
@@ -605,6 +644,15 @@ def _read_odim_slice_from_file(odim_file: str, nslice: int, **kwargs) -> xr.Data
     This ensures the file is properly closed after reading.
     """
     with h5py.File(odim_file, "r") as hfile:
+        return read_odim_slice_h5(hfile, nslice, **kwargs)
+
+
+def _read_odim_slice_from_file_mode(odim_file: str, mode: str, nslice: int, **kwargs) -> xr.Dataset:
+    """
+    Internal helper: Read a single slice by opening the file in a requested mode.
+    This ensures the file is properly closed after reading.
+    """
+    with h5py.File(odim_file, mode) as hfile:
         return read_odim_slice_h5(hfile, nslice, **kwargs)
 
 
@@ -646,6 +694,9 @@ def read_write_odim(
     The caller is responsible for closing the returned file handle.
     """
     rw_mode = "r+" if read_write else "r"
+    if read_write and lazy_load:
+        raise ValueError("lazy_load=True is not supported with read_write=True due to HDF5 handle safety constraints.")
+
     hfile = h5py.File(odim_file, rw_mode)
 
     user_sweep = kwargs.get("nslice", None)
@@ -659,16 +710,19 @@ def read_write_odim(
             raise ValueError(f"sweep index {user_sweep} out of range (0-{nsweep-1})")
 
         # Only process the requested sweep
-        c = dask.delayed(read_odim_slice_h5)(hfile, user_sweep, **kwargs)
-        radar.append(c)
+        if lazy_load:
+            c = dask.delayed(_read_odim_slice_from_file_mode)(odim_file, rw_mode, user_sweep, **kwargs)
+            radar.append(c)
+        else:
+            radar.append(read_odim_slice_h5(hfile, user_sweep, **kwargs))
     else:
         # Process all sweeps
         for sweep in range(nsweep):
-            c = dask.delayed(read_odim_slice_h5)(hfile, sweep, **kwargs)
-            radar.append(c)
-
-    if not lazy_load:
-        radar = [r.compute() for r in radar]
+            if lazy_load:
+                c = dask.delayed(_read_odim_slice_from_file_mode)(odim_file, rw_mode, sweep, **kwargs)
+                radar.append(c)
+            else:
+                radar.append(read_odim_slice_h5(hfile, sweep, **kwargs))
 
     return (radar, hfile)
 
