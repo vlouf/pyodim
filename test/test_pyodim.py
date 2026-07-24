@@ -7,6 +7,9 @@ from pyodim.pyodim import (
     write_odim_str_attrib,
     get_dataset_metadata,
     coord_from_metadata,
+    copy_h5_data,
+    read_odim_slice_h5,
+    read_write_odim,
 )
 import h5py
 import tempfile
@@ -393,3 +396,80 @@ def test_coord_from_metadata_uses_normalized_rstart():
 
     assert r_km[0] == pytest.approx(1125.0)
     assert r_m[0] == pytest.approx(1125.0)
+
+
+def _create_minimal_odim_file(path):
+    with h5py.File(path, 'w') as h5_file:
+        h5_file.attrs['Conventions'] = np.bytes_('ODIM_H5/V2_4')
+
+        root_what = h5_file.create_group('/what')
+        root_what.attrs['date'] = np.bytes_('20240101')
+        root_what.attrs['time'] = np.bytes_('000000')
+        root_what.attrs['version'] = np.bytes_('H5rad 2.4')
+
+        root_how = h5_file.create_group('/how')
+        root_how.attrs['wavelength'] = 5.3
+
+        root_where = h5_file.create_group('/where')
+        root_where.attrs['lat'] = -35.0
+        root_where.attrs['lon'] = 149.0
+        root_where.attrs['height'] = 100.0
+
+        dataset = h5_file.create_group('/dataset1')
+        ds_how = dataset.create_group('how')
+        ds_how.attrs['highprf'] = 1000.0
+        ds_how.attrs['NI'] = 13.25
+
+        ds_what = dataset.create_group('what')
+        ds_what.attrs['startdate'] = np.bytes_('20240101')
+        ds_what.attrs['starttime'] = np.bytes_('000000')
+        ds_what.attrs['enddate'] = np.bytes_('20240101')
+        ds_what.attrs['endtime'] = np.bytes_('000100')
+
+        ds_where = dataset.create_group('where')
+        ds_where.attrs['a1gate'] = 0
+        ds_where.attrs['nrays'] = 2
+        ds_where.attrs['rstart'] = 1000.0
+        ds_where.attrs['rscale'] = 250.0
+        ds_where.attrs['nbins'] = 2
+        ds_where.attrs['elangle'] = 0.5
+
+        data1 = dataset.create_group('data1')
+        data1_what = data1.create_group('what')
+        data1_what.attrs['gain'] = 1.0
+        data1_what.attrs['offset'] = 0.0
+        data1_what.attrs['nodata'] = -9999
+        data1_what.attrs['quantity'] = np.bytes_('TH')
+        data1.create_dataset('data', data=np.array([[1, 2], [3, 4]], dtype=np.int16))
+
+
+def test_read_odim_slice_h5_rejects_invalid_slice_index():
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        _create_minimal_odim_file(tmp_file.name)
+        with h5py.File(tmp_file.name, 'r') as h5_file:
+            with pytest.raises(ValueError):
+                read_odim_slice_h5(h5_file, nslice=1)
+
+
+def test_read_odim_slice_h5_max_field_elements_guard():
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        _create_minimal_odim_file(tmp_file.name)
+        with h5py.File(tmp_file.name, 'r') as h5_file:
+            with pytest.raises(ValueError, match='max_field_elements'):
+                read_odim_slice_h5(h5_file, nslice=0, max_field_elements=3)
+
+
+def test_copy_h5_data_uses_next_available_numeric_id():
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        with h5py.File(tmp_file.name, 'w') as h5_file:
+            h5_file.create_group('data1')
+            h5_file.create_group('data3')
+
+            new_id = copy_h5_data(h5_file, 'data1')
+            assert new_id == 'data4'
+            assert 'data4' in h5_file
+
+
+def test_read_write_odim_disallows_lazy_with_read_write(sample_odim_file):
+    with pytest.raises(ValueError, match='lazy_load=True'):
+        read_write_odim(sample_odim_file, lazy_load=True, read_write=True)
