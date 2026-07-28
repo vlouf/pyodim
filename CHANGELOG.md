@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [v0.6.2] 28 July 2026
 
 ### Changed
 - Reader API consolidation: `read_odim` is now the canonical public API for both
@@ -21,6 +21,6 @@ All notable changes to this project will be documented in this file.
   - New: `read_odim(path, mode="r+", return_handle=True, ...)`
 
 ### Planned Removal Timeline
-- Next release (`N`): `read_write_odim` remains available with deprecation warning.
-- Following release (`N+1`): documentation and examples use `read_odim` only.
-- Next major release after `N+1`: `read_write_odim` planned for removal.
+- Next release (`0.6.2`): `read_write_odim` remains available with deprecation warning.
+- Following release (`0.6.X`): documentation and examples use `read_odim` only.
+- Next major release after `0.7`: `read_write_odim` planned for removal.
