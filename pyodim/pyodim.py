@@ -23,7 +23,7 @@ Natively reading ODIM H5 radar files in Python.
 
 import warnings
 import datetime
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union, cast
 
 from dask import delayed
 import dask.array as da
@@ -652,18 +652,9 @@ def read_odim_slice_h5(
     return dataset
 
 
-def _read_odim_slice_from_file(odim_file: str, nslice: int, **kwargs) -> xr.Dataset:
+def _read_odim_slice_from_file(odim_file: str, nslice: int, mode: str = "r", **kwargs) -> xr.Dataset:
     """
     Internal helper: Read a single slice by opening the file internally.
-    This ensures the file is properly closed after reading.
-    """
-    with h5py.File(odim_file, "r") as hfile:
-        return read_odim_slice_h5(hfile, nslice, **kwargs)
-
-
-def _read_odim_slice_from_file_mode(odim_file: str, mode: str, nslice: int, **kwargs) -> xr.Dataset:
-    """
-    Internal helper: Read a single slice by opening the file in a requested mode.
     This ensures the file is properly closed after reading.
     """
     with h5py.File(odim_file, mode) as hfile:
@@ -679,8 +670,8 @@ def read_write_odim(
     **kwargs,
 ) -> Tuple[List[xr.Dataset], h5py.File]:
     """
-    Read one or multiple sweeps from an ODIM HDF5 radar file and return both
-    the data and the file handle.
+    Backward-compatible wrapper around `read_odim` that also returns the
+    underlying HDF5 file handle.
 
     Parameters
     ----------
@@ -707,83 +698,34 @@ def read_write_odim(
     Returns
     -------
     tuple
-        (radar, hfile)
-        radar : list of xr.Dataset or list of dask.delayed
-            Radar sweeps ordered by elevation angle.
-        hfile : h5py.File
-            Open file handle for further inspection or modification.
+        `(radar, hfile)` as returned by
+        `read_odim(..., return_handle=True, mode=...)`.
 
     Note
     ----
-    The caller is responsible for closing the returned file handle.
+    This API is kept for backward compatibility. Prefer
+    `read_odim(..., return_handle=True, mode="r"|"r+")`.
     """
-    rw_mode = "r+" if read_write else "r"
+    warnings.warn(
+        "`read_write_odim` is deprecated and will be removed in a future release. "
+        "Use `read_odim(..., return_handle=True, mode='r'|'r+')` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
-    if backend is None:
-        if lazy_load is None:
-            backend = "dask"
-        else:
-            backend = "dask" if lazy_load else "numpy"
-            warnings.warn(
-                "`lazy_load` is deprecated and will be removed in a future release. "
-                "Use `backend='dask'|'numpy'` and `compute=True|False`.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-    else:
-        backend = backend.lower()
-        if backend not in {"dask", "numpy"}:
-            raise ValueError("Invalid backend. Expected one of: 'dask', 'numpy'.")
-        if lazy_load is not None:
-            warnings.warn(
-                "`lazy_load` is deprecated and ignored when `backend` is provided.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
-    if read_write and backend == "dask":
-        raise ValueError("backend='dask' is not supported with read_write=True due to HDF5 handle safety constraints.")
-
-    if backend == "dask" and kwargs.get("use_dask_arrays", False):
-        raise ValueError(
-            "use_dask_arrays=True is not compatible with backend='dask'. "
-            "Use backend='numpy' with read_write_odim to keep file handles open for chunked dask-backed fields."
-        )
-
-    if compute is None:
-        compute = False if backend == "dask" else True
-
-    hfile = h5py.File(odim_file, rw_mode)
-
-    user_sweep = kwargs.get("nslice", None)
-    nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
-
-    radar = []
-    if user_sweep is not None:
-        kwargs.pop("nslice", None)  # Prevent duplicate argument
-        if user_sweep < 0 or user_sweep >= nsweep:
-            hfile.close()
-            raise ValueError(f"sweep index {user_sweep} out of range (0-{nsweep-1})")
-
-        # Only process the requested sweep
-        if backend == "dask":
-            c = delayed(_read_odim_slice_from_file_mode)(odim_file, rw_mode, user_sweep, **kwargs)
-            radar.append(c)
-        else:
-            radar.append(read_odim_slice_h5(hfile, user_sweep, **kwargs))
-    else:
-        # Process all sweeps
-        for sweep in range(nsweep):
-            if backend == "dask":
-                c = delayed(_read_odim_slice_from_file_mode)(odim_file, rw_mode, sweep, **kwargs)
-                radar.append(c)
-            else:
-                radar.append(read_odim_slice_h5(hfile, sweep, **kwargs))
-
-    if backend == "dask" and compute:
-        radar = [r.compute() for r in radar]
-
-    return (radar, hfile)
+    mode = "r+" if read_write else "r"
+    return cast(
+        Tuple[List[xr.Dataset], h5py.File],
+        read_odim(
+            odim_file,
+            lazy_load=lazy_load,
+            backend=backend,
+            compute=compute,
+            mode=mode,
+            return_handle=True,
+            **kwargs,
+        ),
+    )
 
 
 def read_odim(
@@ -791,13 +733,17 @@ def read_odim(
     lazy_load: Optional[bool] = None,
     backend: Optional[str] = None,
     compute: Optional[bool] = None,
+    mode: str = "r",
+    return_handle: bool = False,
     **kwargs,
-) -> List[xr.Dataset]:
+) -> Union[List[xr.Dataset], Tuple[List[xr.Dataset], h5py.File]]:
     """
     Convenience wrapper to read radar sweeps from an ODIM HDF5 file and return them
     as a list of xarray.Dataset objects.
 
-    This function is thread-safe and properly manages file handles.
+    By default this function is thread-safe and properly manages file handles.
+    When `return_handle=True`, it returns an open file handle for in-place edits
+    and the caller becomes responsible for closing it.
 
     Parameters
     ----------
@@ -813,6 +759,12 @@ def read_odim(
     compute : bool, optional
         Convenience switch for `backend="dask"`.
         If True, computes delayed sweeps before returning.
+    mode : str, optional
+        HDF5 open mode passed to `h5py.File` for direct reads.
+        Use `"r"` for read-only and `"r+"` for read/write access.
+    return_handle : bool, optional
+        If True, return `(radar, hfile)` where `hfile` stays open.
+        If False (default), return only `radar` and close file handles.
     **kwargs
         Additional arguments such as:
         - nslice (int): Specific sweep index to read.
@@ -823,13 +775,15 @@ def read_odim(
     -------
     list of xr.Dataset or list of dask.delayed
         Radar sweeps ordered by elevation angle, each as an xarray.Dataset.
-        If lazy_load=True, returns delayed objects that open/close the file independently.
-        If lazy_load=False, returns computed xarray.Dataset objects.
+        If `backend="dask"`, returns delayed objects unless `compute=True`.
+        If `backend="numpy"`, returns materialized datasets.
+    tuple, optional
+        If `return_handle=True`, returns `(radar, hfile)`.
     """
-    if kwargs.get("use_dask_arrays", False):
+    if kwargs.get("use_dask_arrays", False) and not return_handle:
         raise ValueError(
             "use_dask_arrays=True is not supported in read_odim because file handles are closed before return. "
-            "Use read_write_odim(..., backend='numpy', use_dask_arrays=True) instead."
+            "Use read_odim(..., backend='numpy', return_handle=True, use_dask_arrays=True) instead."
         )
 
     if backend is None:
@@ -857,8 +811,17 @@ def read_odim(
     if compute is None:
         compute = False if backend == "dask" else True
 
+    if mode != "r" and backend == "dask":
+        raise ValueError("backend='dask' is not supported with mode != 'r' due to HDF5 handle safety constraints.")
+
+    if backend == "dask" and kwargs.get("use_dask_arrays", False):
+        raise ValueError(
+            "use_dask_arrays=True is not compatible with backend='dask'. "
+            "Use backend='numpy' with return_handle=True to keep file handles open for chunked dask-backed fields."
+        )
+
     # First, determine which sweeps to read
-    with h5py.File(odim_file, "r") as hfile:
+    with h5py.File(odim_file, mode) as hfile:
         user_sweep = kwargs.get("nslice", None)
         nsweep = len([k for k in hfile["/"].keys() if k.startswith("dataset")])
 
@@ -875,14 +838,32 @@ def read_odim(
 
     # Create delayed tasks or read immediately
     radar = []
+    if return_handle:
+        hfile = h5py.File(odim_file, mode)
+        try:
+            for sweep in sweeps_to_read:
+                if backend == "dask":
+                    c = delayed(_read_odim_slice_from_file)(odim_file, sweep, mode=mode, **kwargs_copy)
+                    radar.append(c)
+                else:
+                    radar.append(read_odim_slice_h5(hfile, sweep, **kwargs_copy))
+
+            if backend == "dask" and compute:
+                radar = [r.compute() for r in radar]
+        except Exception:
+            hfile.close()
+            raise
+
+        return radar, hfile
+
     for sweep in sweeps_to_read:
         if backend == "dask":
             # Each delayed task will open and close the file independently
-            c = delayed(_read_odim_slice_from_file)(odim_file, sweep, **kwargs_copy)
+            c = delayed(_read_odim_slice_from_file)(odim_file, sweep, mode=mode, **kwargs_copy)
             radar.append(c)
         else:
             # Read immediately with proper file handling
-            dataset = _read_odim_slice_from_file(odim_file, sweep, **kwargs_copy)
+            dataset = _read_odim_slice_from_file(odim_file, sweep, mode=mode, **kwargs_copy)
             radar.append(dataset)
 
     if backend == "dask" and compute:
