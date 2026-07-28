@@ -9,6 +9,8 @@ All notable changes to this project will be documented in this file.
   standard reads and read/write workflows.
 - `read_odim` supports `mode` and `return_handle` to replace separate read/write
   entry points.
+- Top-level package exports no longer include `read_write_odim`; use
+  `pyodim.pyodim.read_write_odim` only for temporary compatibility during migration.
 
 ### Deprecated
 - `read_write_odim` is deprecated and emits `DeprecationWarning`.

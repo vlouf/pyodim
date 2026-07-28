@@ -1,5 +1,6 @@
 # tests/test_pyodim.py
 import os
+import pyodim
 import pytest
 from pyodim import read_odim
 from pyodim.pyodim import (
@@ -57,6 +58,11 @@ def test_check_nyquist_valid():
 
     # Should not raise an error
     check_nyquist(ds)
+
+
+def test_read_write_odim_not_exported_top_level_namespace():
+    """Deprecated read_write_odim should not be exported from top-level package."""
+    assert not hasattr(pyodim, 'read_write_odim')
 
 def test_read_odim_returns_datasets(sample_odim_file):
     """

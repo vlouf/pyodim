@@ -5,7 +5,7 @@ Natively reading ODIM H5 radar files in Python.
 @author: Valentin Louf <valentin.louf@bom.gov.au>
 @institutions: Bureau of Meteorology and Monash University.
 @creation: 21/01/2020
-@date: 2/12/2025
+@date: 28/07/2026
 
 .. autosummary::
     :toctree: generated/
@@ -19,6 +19,11 @@ Natively reading ODIM H5 radar files in Python.
     get_root_metadata
     radar_coordinates_to_xyz
     read_odim
+
+Migration note
+--------------
+`read_write_odim` is deprecated. For read/write workflows use:
+`read_odim(..., mode="r+", return_handle=True)`.
 """
 
 import warnings
