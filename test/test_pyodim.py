@@ -496,7 +496,8 @@ def test_read_odim_lazy_load_emits_deprecation_warning(sample_odim_file):
 
 
 def test_read_write_odim_backend_dask_compute_true(sample_odim_file):
-    radar, hfile = read_write_odim(sample_odim_file, backend='dask', compute=True)
+    with pytest.warns(DeprecationWarning):
+        radar, hfile = read_write_odim(sample_odim_file, backend='dask', compute=True)
     try:
         assert len(radar) > 0
         assert isinstance(radar[0], xr.Dataset)
@@ -505,8 +506,9 @@ def test_read_write_odim_backend_dask_compute_true(sample_odim_file):
 
 
 def test_read_write_odim_invalid_backend(sample_odim_file):
-    with pytest.raises(ValueError, match='Invalid backend'):
-        read_write_odim(sample_odim_file, backend='cupy')
+    with pytest.warns(DeprecationWarning):
+        with pytest.raises(ValueError, match='Invalid backend'):
+            read_write_odim(sample_odim_file, backend='cupy')
 
 
 def test_read_odim_invalid_backend(sample_odim_file):
@@ -515,7 +517,8 @@ def test_read_odim_invalid_backend(sample_odim_file):
 
 
 def test_read_write_odim_compute_ignored_for_numpy_backend(sample_odim_file):
-    radar, hfile = read_write_odim(sample_odim_file, backend='numpy', compute=False)
+    with pytest.warns(DeprecationWarning):
+        radar, hfile = read_write_odim(sample_odim_file, backend='numpy', compute=False)
     try:
         assert len(radar) > 0
         assert isinstance(radar[0], xr.Dataset)
@@ -539,13 +542,14 @@ def test_read_write_odim_lazy_load_deprecated_when_backend_missing(sample_odim_f
 
 
 def test_read_write_odim_can_return_dask_backed_fields(sample_odim_file):
-    radar, hfile = read_write_odim(
-        sample_odim_file,
-        backend='numpy',
-        read_write=False,
-        use_dask_arrays=True,
-        field_chunks=(64, 256),
-    )
+    with pytest.warns(DeprecationWarning):
+        radar, hfile = read_write_odim(
+            sample_odim_file,
+            backend='numpy',
+            read_write=False,
+            use_dask_arrays=True,
+            field_chunks=(64, 256),
+        )
     try:
         assert len(radar) > 0
         first = radar[0]
@@ -564,3 +568,18 @@ def test_read_write_odim_disallows_dask_fields_with_lazy(sample_odim_file):
 def test_read_odim_disallows_dask_backed_fields(sample_odim_file):
     with pytest.raises(ValueError, match='use_dask_arrays=True'):
         read_odim(sample_odim_file, lazy_load=True, use_dask_arrays=True)
+
+
+def test_read_odim_return_handle_numpy_mode(sample_odim_file):
+    radar, hfile = read_odim(sample_odim_file, backend='numpy', return_handle=True, mode='r')
+    try:
+        assert len(radar) > 0
+        assert isinstance(radar[0], xr.Dataset)
+        assert hfile.id.valid
+    finally:
+        hfile.close()
+
+
+def test_read_odim_disallows_dask_with_non_read_mode(sample_odim_file):
+    with pytest.raises(ValueError, match="mode != 'r'"):
+        read_odim(sample_odim_file, backend='dask', mode='r+', return_handle=True)
