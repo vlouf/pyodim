@@ -1,5 +1,6 @@
 # tests/test_pyodim.py
 import os
+import pyodim
 import pytest
 from pyodim import read_odim
 from pyodim.pyodim import (
@@ -7,11 +8,15 @@ from pyodim.pyodim import (
     write_odim_str_attrib,
     get_dataset_metadata,
     coord_from_metadata,
+    copy_h5_data,
+    read_odim_slice_h5,
+    read_write_odim,
 )
 import h5py
 import tempfile
 import xarray as xr
 import numpy as np
+import dask.array as da
 
 # Define the path to the ODIM H5 file
 ODIM_FILE_PATH = "test/8_20241112_005000.pvol.h5"
@@ -53,6 +58,11 @@ def test_check_nyquist_valid():
 
     # Should not raise an error
     check_nyquist(ds)
+
+
+def test_read_write_odim_not_exported_top_level_namespace():
+    """Deprecated read_write_odim should not be exported from top-level package."""
+    assert not hasattr(pyodim, 'read_write_odim')
 
 def test_read_odim_returns_datasets(sample_odim_file):
     """
@@ -393,3 +403,189 @@ def test_coord_from_metadata_uses_normalized_rstart():
 
     assert r_km[0] == pytest.approx(1125.0)
     assert r_m[0] == pytest.approx(1125.0)
+
+
+def _create_minimal_odim_file(path):
+    with h5py.File(path, 'w') as h5_file:
+        h5_file.attrs['Conventions'] = np.bytes_('ODIM_H5/V2_4')
+
+        root_what = h5_file.create_group('/what')
+        root_what.attrs['date'] = np.bytes_('20240101')
+        root_what.attrs['time'] = np.bytes_('000000')
+        root_what.attrs['version'] = np.bytes_('H5rad 2.4')
+
+        root_how = h5_file.create_group('/how')
+        root_how.attrs['wavelength'] = 5.3
+
+        root_where = h5_file.create_group('/where')
+        root_where.attrs['lat'] = -35.0
+        root_where.attrs['lon'] = 149.0
+        root_where.attrs['height'] = 100.0
+
+        dataset = h5_file.create_group('/dataset1')
+        ds_how = dataset.create_group('how')
+        ds_how.attrs['highprf'] = 1000.0
+        ds_how.attrs['NI'] = 13.25
+
+        ds_what = dataset.create_group('what')
+        ds_what.attrs['startdate'] = np.bytes_('20240101')
+        ds_what.attrs['starttime'] = np.bytes_('000000')
+        ds_what.attrs['enddate'] = np.bytes_('20240101')
+        ds_what.attrs['endtime'] = np.bytes_('000100')
+
+        ds_where = dataset.create_group('where')
+        ds_where.attrs['a1gate'] = 0
+        ds_where.attrs['nrays'] = 2
+        ds_where.attrs['rstart'] = 1000.0
+        ds_where.attrs['rscale'] = 250.0
+        ds_where.attrs['nbins'] = 2
+        ds_where.attrs['elangle'] = 0.5
+
+        data1 = dataset.create_group('data1')
+        data1_what = data1.create_group('what')
+        data1_what.attrs['gain'] = 1.0
+        data1_what.attrs['offset'] = 0.0
+        data1_what.attrs['nodata'] = -9999
+        data1_what.attrs['quantity'] = np.bytes_('TH')
+        data1.create_dataset('data', data=np.array([[1, 2], [3, 4]], dtype=np.int16))
+
+
+def test_read_odim_slice_h5_rejects_invalid_slice_index():
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        _create_minimal_odim_file(tmp_file.name)
+        with h5py.File(tmp_file.name, 'r') as h5_file:
+            with pytest.raises(ValueError):
+                read_odim_slice_h5(h5_file, nslice=1)
+
+
+def test_read_odim_slice_h5_max_field_elements_guard():
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        _create_minimal_odim_file(tmp_file.name)
+        with h5py.File(tmp_file.name, 'r') as h5_file:
+            with pytest.raises(ValueError, match='max_field_elements'):
+                read_odim_slice_h5(h5_file, nslice=0, max_field_elements=3)
+
+
+def test_copy_h5_data_uses_next_available_numeric_id():
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        with h5py.File(tmp_file.name, 'w') as h5_file:
+            h5_file.create_group('data1')
+            h5_file.create_group('data3')
+
+            new_id = copy_h5_data(h5_file, 'data1')
+            assert new_id == 'data4'
+            assert 'data4' in h5_file
+
+
+def test_read_write_odim_disallows_lazy_with_read_write(sample_odim_file):
+    with pytest.warns(DeprecationWarning):
+        with pytest.raises(ValueError, match="backend='dask'"):
+            read_write_odim(sample_odim_file, lazy_load=True, read_write=True)
+
+
+def test_read_odim_backend_numpy_returns_materialized_datasets(sample_odim_file):
+    radar = read_odim(sample_odim_file, backend='numpy')
+    assert len(radar) > 0
+    assert isinstance(radar[0], xr.Dataset)
+
+
+def test_read_odim_backend_dask_compute_true_returns_materialized_datasets(sample_odim_file):
+    radar = read_odim(sample_odim_file, backend='dask', compute=True)
+    assert len(radar) > 0
+    assert isinstance(radar[0], xr.Dataset)
+
+
+def test_read_odim_lazy_load_emits_deprecation_warning(sample_odim_file):
+    with pytest.warns(DeprecationWarning):
+        radar = read_odim(sample_odim_file, lazy_load=False)
+    assert len(radar) > 0
+
+
+def test_read_write_odim_backend_dask_compute_true(sample_odim_file):
+    with pytest.warns(DeprecationWarning):
+        radar, hfile = read_write_odim(sample_odim_file, backend='dask', compute=True)
+    try:
+        assert len(radar) > 0
+        assert isinstance(radar[0], xr.Dataset)
+    finally:
+        hfile.close()
+
+
+def test_read_write_odim_invalid_backend(sample_odim_file):
+    with pytest.warns(DeprecationWarning):
+        with pytest.raises(ValueError, match='Invalid backend'):
+            read_write_odim(sample_odim_file, backend='cupy')
+
+
+def test_read_odim_invalid_backend(sample_odim_file):
+    with pytest.raises(ValueError, match='Invalid backend'):
+        read_odim(sample_odim_file, backend='cupy')
+
+
+def test_read_write_odim_compute_ignored_for_numpy_backend(sample_odim_file):
+    with pytest.warns(DeprecationWarning):
+        radar, hfile = read_write_odim(sample_odim_file, backend='numpy', compute=False)
+    try:
+        assert len(radar) > 0
+        assert isinstance(radar[0], xr.Dataset)
+    finally:
+        hfile.close()
+
+
+def test_read_odim_compute_ignored_for_numpy_backend(sample_odim_file):
+    radar = read_odim(sample_odim_file, backend='numpy', compute=False)
+    assert len(radar) > 0
+    assert isinstance(radar[0], xr.Dataset)
+
+
+def test_read_write_odim_lazy_load_deprecated_when_backend_missing(sample_odim_file):
+    with pytest.warns(DeprecationWarning):
+        radar, hfile = read_write_odim(sample_odim_file, lazy_load=False, read_write=False)
+    try:
+        assert len(radar) > 0
+    finally:
+        hfile.close()
+
+
+def test_read_write_odim_can_return_dask_backed_fields(sample_odim_file):
+    with pytest.warns(DeprecationWarning):
+        radar, hfile = read_write_odim(
+            sample_odim_file,
+            backend='numpy',
+            read_write=False,
+            use_dask_arrays=True,
+            field_chunks=(64, 256),
+        )
+    try:
+        assert len(radar) > 0
+        first = radar[0]
+        assert isinstance(first['TH'].data, da.Array)
+        assert first['TH'].data.chunks is not None
+    finally:
+        hfile.close()
+
+
+def test_read_write_odim_disallows_dask_fields_with_lazy(sample_odim_file):
+    with pytest.warns(DeprecationWarning):
+        with pytest.raises(ValueError, match='use_dask_arrays=True'):
+            read_write_odim(sample_odim_file, lazy_load=True, use_dask_arrays=True)
+
+
+def test_read_odim_disallows_dask_backed_fields(sample_odim_file):
+    with pytest.raises(ValueError, match='use_dask_arrays=True'):
+        read_odim(sample_odim_file, lazy_load=True, use_dask_arrays=True)
+
+
+def test_read_odim_return_handle_numpy_mode(sample_odim_file):
+    radar, hfile = read_odim(sample_odim_file, backend='numpy', return_handle=True, mode='r')
+    try:
+        assert len(radar) > 0
+        assert isinstance(radar[0], xr.Dataset)
+        assert hfile.id.valid
+    finally:
+        hfile.close()
+
+
+def test_read_odim_disallows_dask_with_non_read_mode(sample_odim_file):
+    with pytest.raises(ValueError, match="mode != 'r'"):
+        read_odim(sample_odim_file, backend='dask', mode='r+', return_handle=True)
