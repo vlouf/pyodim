@@ -2,26 +2,31 @@
 import os
 import pyodim
 import pytest
-from pyodim import read_odim
+from pyodim import read_odim, read_sweep, georeference
 from pyodim.pyodim import (
+    antenna_to_ground,
     check_nyquist,
+    decode_field,
+    geodesic_forward,
     write_odim_str_attrib,
     get_dataset_metadata,
     coord_from_metadata,
     copy_h5_data,
-    read_odim_slice_h5,
-    read_write_odim,
+    radar_coordinates_to_xyz,
 )
 import h5py
+import datetime
+import subprocess
+import sys
 import tempfile
+import warnings
 import xarray as xr
 import numpy as np
-import dask.array as da
 
 # Define the path to the ODIM H5 file
 ODIM_FILE_PATH = "test/8_20241112_005000.pvol.h5"
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def sample_odim_file():
     """
     Fixture to check the presence of the sample ODIM file.
@@ -30,11 +35,11 @@ def sample_odim_file():
         pytest.skip(f"Test file '{ODIM_FILE_PATH}' does not exist.")
     return ODIM_FILE_PATH
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def radar_datasets(sample_odim_file):
     """
-    Fixture that reads the ODIM file and returns the radar datasets.
-    This avoids reading the file multiple times across tests.
+    Fixture that reads the ODIM file once (eagerly) and returns the radar datasets.
+    `xr.Dataset.compute()` is a no-op, so tests written for delayed objects still work.
     """
     return read_odim(sample_odim_file)
 
@@ -60,10 +65,6 @@ def test_check_nyquist_valid():
     check_nyquist(ds)
 
 
-def test_read_write_odim_not_exported_top_level_namespace():
-    """Deprecated read_write_odim should not be exported from top-level package."""
-    assert not hasattr(pyodim, 'read_write_odim')
-
 def test_read_odim_returns_datasets(sample_odim_file):
     """
     Test that read_odim returns a non-empty list of datasets.
@@ -88,9 +89,9 @@ def test_dataset_has_data_variables(radar_datasets):
 
 def test_geographic_coordinates_present(radar_datasets):
     """
-    Test that latitude and longitude coordinates are present.
+    Test that latitude and longitude are added by georeference().
     """
-    dataset = radar_datasets[0].compute()
+    dataset = georeference(radar_datasets[0].compute())
     assert 'latitude' in dataset.data_vars or 'latitude' in dataset.coords, \
         "Latitude coordinate is missing."
     assert 'longitude' in dataset.data_vars or 'longitude' in dataset.coords, \
@@ -289,7 +290,7 @@ def test_geographic_coordinate_ranges(radar_datasets):
     """
     Test that geographic coordinates are within valid ranges.
     """
-    dataset = radar_datasets[0].compute()
+    dataset = georeference(radar_datasets[0].compute())
 
     if 'latitude' in dataset.data_vars:
         lat = dataset['latitude'].values
@@ -450,22 +451,6 @@ def _create_minimal_odim_file(path):
         data1.create_dataset('data', data=np.array([[1, 2], [3, 4]], dtype=np.int16))
 
 
-def test_read_odim_slice_h5_rejects_invalid_slice_index():
-    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
-        _create_minimal_odim_file(tmp_file.name)
-        with h5py.File(tmp_file.name, 'r') as h5_file:
-            with pytest.raises(ValueError):
-                read_odim_slice_h5(h5_file, nslice=1)
-
-
-def test_read_odim_slice_h5_max_field_elements_guard():
-    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
-        _create_minimal_odim_file(tmp_file.name)
-        with h5py.File(tmp_file.name, 'r') as h5_file:
-            with pytest.raises(ValueError, match='max_field_elements'):
-                read_odim_slice_h5(h5_file, nslice=0, max_field_elements=3)
-
-
 def test_copy_h5_data_uses_next_available_numeric_id():
     with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
         with h5py.File(tmp_file.name, 'w') as h5_file:
@@ -477,115 +462,370 @@ def test_copy_h5_data_uses_next_available_numeric_id():
             assert 'data4' in h5_file
 
 
-def test_read_write_odim_disallows_lazy_with_read_write(sample_odim_file):
-    with pytest.warns(DeprecationWarning):
-        with pytest.raises(ValueError, match="backend='dask'"):
-            read_write_odim(sample_odim_file, lazy_load=True, read_write=True)
+# --------------------------------------------------------------------------- #
+# Regression tests for the 0.7 correctness fixes and performance plan
+# --------------------------------------------------------------------------- #
+def test_fields_are_float32(radar_datasets):
+    """Fields must stay float32 (NumPy 2 promotion regression)."""
+    dataset = radar_datasets[0]
+    for var in dataset.data_vars:
+        assert dataset[var].dtype == np.float32, f"{var} is {dataset[var].dtype}, expected float32"
 
 
-def test_read_odim_backend_numpy_returns_materialized_datasets(sample_odim_file):
-    radar = read_odim(sample_odim_file, backend='numpy')
-    assert len(radar) > 0
-    assert isinstance(radar[0], xr.Dataset)
+def test_field_encoding_kept_in_attrs(radar_datasets):
+    """gain/offset/nodata/undetect are preserved on each field for lossless round-trips."""
+    th = radar_datasets[0]['TH']
+    for key in ('gain', 'offset', 'nodata', 'undetect', 'id'):
+        assert key in th.attrs
+    assert th.attrs['gain'] == pytest.approx(0.5)
+    assert th.attrs['offset'] == pytest.approx(-32.0)
 
 
-def test_read_odim_backend_dask_compute_true_returns_materialized_datasets(sample_odim_file):
-    radar = read_odim(sample_odim_file, backend='dask', compute=True)
-    assert len(radar) > 0
-    assert isinstance(radar[0], xr.Dataset)
+def test_undetect_is_masked_by_default(sample_odim_file):
+    """undetect gates decode to NaN by default; mask_undetect=False keeps the raw decoded value."""
+    masked = read_odim(sample_odim_file, sweeps=0)[0]['DBZH_CLEAN']
+    assert masked.attrs['undetect'] == pytest.approx(1.0)
+    undetect_value = masked.attrs['gain'] * masked.attrs['undetect'] + masked.attrs['offset']  # -31.9 dBZ
+    assert not np.any(np.isclose(masked.values, undetect_value, atol=1e-3))
+
+    kept = read_odim(sample_odim_file, sweeps=0, mask_undetect=False)[0]['DBZH_CLEAN']
+    assert np.sum(np.isclose(kept.values, undetect_value, atol=1e-3)) > 0
+    assert np.isnan(kept.values).sum() < np.isnan(masked.values).sum()
 
 
-def test_read_odim_lazy_load_emits_deprecation_warning(sample_odim_file):
-    with pytest.warns(DeprecationWarning):
-        radar = read_odim(sample_odim_file, lazy_load=False)
-    assert len(radar) > 0
+def test_decode_field_lut_matches_direct_path():
+    raw = np.array([[0, 1, 2, 255]], dtype=np.uint8)
+    lut = decode_field(raw, 0.5, -32.0, nodata=255, undetect=0)
+    direct = decode_field(raw.astype(np.int16), 0.5, -32.0, nodata=255, undetect=0)
+    assert lut.dtype == np.float32 and direct.dtype == np.float32
+    np.testing.assert_array_equal(np.isnan(lut), [[True, False, False, True]])
+    np.testing.assert_allclose(lut, direct, equal_nan=True)
+    assert lut[0, 1] == pytest.approx(-31.5)
+    # non-integer special values fall back to a comparison
+    weird = decode_field(raw, 1.0, 0.0, nodata=0.5, undetect=None)
+    assert not np.any(np.isnan(weird))
 
 
-def test_read_write_odim_backend_dask_compute_true(sample_odim_file):
-    with pytest.warns(DeprecationWarning):
-        radar, hfile = read_write_odim(sample_odim_file, backend='dask', compute=True)
+def test_attributes_are_serialisable(radar_datasets):
+    """No bytes / None / arrays in attrs; to_netcdf must work."""
+    dataset = radar_datasets[0]
+    for k, v in dataset.attrs.items():
+        assert v is not None, f"attr {k} is None"
+        assert not isinstance(v, (bytes, np.bytes_)), f"attr {k} is bytes"
+        assert not isinstance(v, np.ndarray), f"attr {k} is an ndarray"
+    assert isinstance(dataset.attrs['rapic_HIPRF'], str)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, 'sweep.nc')
+        dataset.to_netcdf(path)
+        with xr.open_dataset(path) as reread:
+            assert 'TH' in reread
+
+
+def test_prt_is_a_per_ray_variable(radar_datasets):
+    """prt(azimuth) on every sweep: alternating on dual-PRF sweeps, constant 1/highprf otherwise."""
+    dual = [ds for ds in radar_datasets if ds.attrs.get('rapic_UNFOLDING', 'None') != 'None']
+    single = [ds for ds in radar_datasets if ds.attrs.get('rapic_UNFOLDING', 'None') == 'None']
+    assert len(dual) > 0 and len(single) > 0
+    for ds in radar_datasets:
+        assert 'prt' in ds.data_vars and 'prt' not in ds.attrs
+        assert ds['prt'].dims == ('azimuth',)
+        assert ds['prt'].dtype == np.float32
+    for ds in dual:
+        assert len(np.unique(ds['prt'].values)) == 2
+    for ds in single:
+        np.testing.assert_allclose(ds['prt'].values, 1.0 / ds.attrs['highprf'], rtol=1e-6)
+
+
+def test_azimuth_grid_is_uniform_for_any_astart():
+    """Regression: the old linspace end point was only right for astart = -da/2."""
+    for astart, nrays in ((-0.5, 360), (0.0, 360), (0.25, 360), (0.0, 720), (-0.25, 720)):
+        metadata = {"astart": astart, "nrays": nrays, "nbins": 4, "rstart": 0.0, "rscale": 250.0, "elangle": 0.5}
+        _, az, _ = coord_from_metadata(metadata)
+        da = 360.0 / nrays
+        assert az[0] == pytest.approx(astart + da / 2)
+        assert az[-1] == pytest.approx(astart + da / 2 + da * (nrays - 1))
+        np.testing.assert_allclose(np.diff(az), da, atol=1e-4)
+
+
+def test_azimuth_from_startaza_stopaza_takes_precedence():
+    nrays = 4
+    startaz = np.array([359.0, 89.0, 179.0, 269.0])
+    stopaz = np.array([1.0, 91.0, 181.0, 271.0])  # first ray wraps through 0
+    metadata = {"astart": 0.0, "nrays": nrays, "nbins": 2, "rstart": 0.0, "rscale": 250.0, "elangle": 0.5,
+                "startazA": startaz, "stopazA": stopaz}
+    _, az, _ = coord_from_metadata(metadata)
+    np.testing.assert_allclose(az, [0.0, 90.0, 180.0, 270.0], atol=1e-5)
+
+
+def test_get_dataset_metadata_reads_startaza():
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        _create_minimal_odim_file(tmp_file.name)
+        with h5py.File(tmp_file.name, 'r+') as h5_file:
+            h5_file['/dataset1/how'].attrs['startazA'] = np.array([0.0, 180.0])
+            h5_file['/dataset1/how'].attrs['stopazA'] = np.array([180.0, 360.0])
+        with h5py.File(tmp_file.name, 'r') as h5_file:
+            _, coords = get_dataset_metadata(h5_file, 'dataset1')
+            assert 'startazA' in coords and 'stopazA' in coords
+            _, az, _ = coord_from_metadata(coords)
+            np.testing.assert_allclose(az, [90.0, 270.0])
+
+
+def test_beam_height_uses_four_thirds_earth_model(radar_datasets):
+    """Regression: z was flat-earth (2.6 km instead of 7.9 km at 300 km, 0.5 deg)."""
+    dataset = radar_datasets[0]
+    r = dataset['range'].values.astype(np.float64)
+    el = float(dataset['elevation'].values[0])
+    re = 4.0 / 3.0 * 6371000.0
+    z_ref = np.sqrt(r**2 + re**2 + 2 * r * re * np.sin(np.deg2rad(el))) - re + dataset.attrs['height']
+    np.testing.assert_allclose(dataset['z'].values[0], z_ref, rtol=1e-5)
+    z_flat = r * np.sin(np.deg2rad(el)) + dataset.attrs['height']
+    assert dataset['z'].values[0, -1] - z_flat[-1] > 1000.0  # far from flat earth at long range
+    s_ref = re * np.arcsin(r * np.cos(np.deg2rad(el)) / (re + z_ref - dataset.attrs['height']))
+    np.testing.assert_allclose(np.hypot(dataset['x'].values, dataset['y'].values)[0], s_ref, rtol=1e-5)
+
+
+def test_antenna_to_ground_reference_values():
+    s, z = antenna_to_ground(np.array([50e3, 100e3, 300e3]), 0.5)
+    np.testing.assert_allclose(z, [583.0, 1461.0, 7912.0], atol=1.0)
+    assert np.all(s < np.array([50e3, 100e3, 300e3]))
+
+
+def test_radar_coordinates_to_xyz_shapes_and_dtype():
+    r = np.arange(0.0, 10.0e3, 250.0)
+    az = np.arange(0.0, 360.0, 1.0)
+    x, y, z = radar_coordinates_to_xyz(r, az, np.array([1.0]))
+    assert x.shape == y.shape == z.shape == (360, 40)
+    assert x.dtype == y.dtype == z.dtype == np.float32
+    assert y[0, -1] > 0 and abs(x[0, -1]) < 1.0  # azimuth 0 points north
+    assert x[90, -1] > 0 and abs(y[90, -1]) < 1.0  # azimuth 90 points east
+
+
+def test_geodesic_forward_origin_and_symmetry():
+    lon, lat = geodesic_forward(152.577, -25.9574, np.array([0.0, 90.0, 180.0, 270.0]), np.array([0.0]))
+    np.testing.assert_allclose(lon, 152.577)
+    np.testing.assert_allclose(lat, -25.9574)
+    lon, lat = geodesic_forward(152.577, -25.9574, np.array([[0.0], [180.0]]), np.array([[100e3]]))
+    assert lat[0, 0] > -25.9574 > lat[1, 0]
+    np.testing.assert_allclose(lon[:, 0], 152.577, atol=1e-9)
+
+
+def test_geodesic_forward_matches_pyproj():
+    pyproj = pytest.importorskip('pyproj')
+    geod = pyproj.Geod(ellps='WGS84')
+    az = np.linspace(0, 359, 37)
+    dist = np.linspace(0, 300e3, 13)
+    lon, lat = geodesic_forward(152.577, -25.9574, az[:, None], dist[None, :])
+    az2d, dist2d = np.broadcast_arrays(az[:, None], dist[None, :])
+    lon_ref, lat_ref, _ = geod.fwd(np.full(az2d.shape, 152.577), np.full(az2d.shape, -25.9574), az2d, dist2d)
+    _, _, err = geod.inv(lon_ref, lat_ref, lon, lat)
+    assert err.max() < 0.01  # metres
+
+
+def test_georeference_numpy_matches_pyproj_method(radar_datasets):
+    pyproj = pytest.importorskip('pyproj')
+    ds = radar_datasets[0]
+    numpy_ds = georeference(ds)
+    pyproj_ds = georeference(ds, method='pyproj')
+    geod = pyproj.Geod(ellps='WGS84')
+    _, _, err = geod.inv(
+        pyproj_ds['longitude'].values.astype(np.float64), pyproj_ds['latitude'].values.astype(np.float64),
+        numpy_ds['longitude'].values.astype(np.float64), numpy_ds['latitude'].values.astype(np.float64),
+    )
+    assert err.max() < 5.0  # float32 lon/lat quantisation is ~1.5 m at this longitude
+    assert numpy_ds['longitude'].dtype == np.float32
+
+
+def test_read_odim_georef_option(sample_odim_file):
+    ds = read_odim(sample_odim_file, sweeps=0)[0]
+    assert 'longitude' not in ds and 'latitude' not in ds
+    ds = read_odim(sample_odim_file, sweeps=0, georef=True)[0]
+    assert 'longitude' in ds and 'latitude' in ds
+    assert ds['longitude'].shape == ds['TH'].shape
+
+
+def test_georeference_invalid_method(radar_datasets):
+    with pytest.raises(ValueError, match='Invalid method'):
+        georeference(radar_datasets[0], method='magic')
+
+
+def test_check_nyquist_dual_prf():
+    wavelength = 10.409  # cm
+    single = 1e-2 * 750.0 * wavelength / 4  # 19.5 m/s
+    extended = 1e-2 * (750.0 * 500.0 / 250.0) * wavelength / 4  # 39.0 m/s
+    check_nyquist({'wavelength': wavelength, 'highprf': 750.0, 'lowprf': 500.0, 'NI': extended})
+    check_nyquist({'wavelength': wavelength, 'highprf': 750.0, 'rapic_UNFOLDING': '2:3', 'NI': extended})
+    with pytest.raises(ValueError):
+        check_nyquist({'wavelength': wavelength, 'highprf': 750.0, 'lowprf': 500.0, 'NI': single})
+    check_nyquist({'wavelength': wavelength, 'highprf': 750.0, 'rapic_UNFOLDING': 'None', 'NI': single})
+    check_nyquist({'highprf': 750.0, 'NI': single})  # incomplete metadata: skipped, no KeyError
+
+
+def test_check_nyq_does_not_warn_on_sample_file(sample_odim_file):
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', UserWarning)
+        read_odim(sample_odim_file, check_nyq=True)
+
+
+def test_quality_group_identified_by_how_task():
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        _create_minimal_odim_file(tmp_file.name)
+        with h5py.File(tmp_file.name, 'r+') as h5_file:
+            quality = h5_file['/dataset1'].create_group('quality1')
+            quality.create_group('how').attrs['task'] = np.bytes_('fi.fmi.ropo.detector.classification')
+            q_what = quality.create_group('what')
+            q_what.attrs['gain'] = 1.0
+            q_what.attrs['offset'] = 0.0
+            q_what.attrs['nodata'] = 255
+            q_what.attrs['undetect'] = 0
+            quality.create_dataset('data', data=np.array([[1, 2], [3, 255]], dtype=np.uint8))
+        with h5py.File(tmp_file.name, 'r') as h5_file:
+            ds = read_sweep(h5_file, 0)
+    assert 'fi.fmi.ropo.detector.classification' in ds.data_vars
+    assert np.isnan(ds['fi.fmi.ropo.detector.classification'].values[1, 1])
+
+
+def test_string_attributes_stored_as_str_are_accepted():
+    """Producers that write variable-length (str) attributes instead of bytes must not crash the reader."""
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        _create_minimal_odim_file(tmp_file.name)
+        with h5py.File(tmp_file.name, 'r+') as h5_file:
+            h5_file.attrs['Conventions'] = 'ODIM_H5/V2_2'
+            h5_file['/what'].attrs['source'] = 'WMO:00000'
+            h5_file['/dataset1/what'].attrs['startdate'] = '20240101'
+            h5_file['/dataset1/data1/what'].attrs['quantity'] = 'TH'
+        ds = read_odim(tmp_file.name)[0]
+    assert ds.attrs['Conventions'] == 'ODIM_H5/V2_2'
+    assert ds.attrs['source'] == 'WMO:00000'
+    assert 'TH' in ds
+
+
+def test_unknown_keyword_raises(sample_odim_file):
+    with pytest.raises(TypeError):
+        read_odim(sample_odim_file, include_field=['DBZH'])
+
+
+def test_sweep_index_out_of_range(sample_odim_file):
+    with pytest.raises(ValueError, match='out of range'):
+        read_odim(sample_odim_file, sweeps=99)
+
+
+def test_ray_timestamps_span_start_to_end(radar_datasets):
+    ds = radar_datasets[0]
+    t = ds['time'].values
+    start = np.datetime64(datetime.datetime.strptime(ds.attrs['start_time'], '%Y%m%d_%H%M%S'), 'ns')
+    end = np.datetime64(datetime.datetime.strptime(ds.attrs['end_time'], '%Y%m%d_%H%M%S'), 'ns')
+    assert t.min() == start and t.max() == end
+    assert t.dtype == np.dtype('datetime64[ns]')
+
+
+def test_import_does_not_load_optional_packages():
+    """`import pyodim` must not import dask, pandas or pyproj (performance plan 4.6)."""
+    code = (
+        "import sys, pyodim; "
+        "print(sorted(m for m in ('dask', 'dask.array', 'pyproj') if m in sys.modules))"
+    )
+    out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == '[]', out.stdout
+
+
+
+# --------------------------------------------------------------------------- #
+# read_odim / read_sweep API (0.7)
+# --------------------------------------------------------------------------- #
+def test_removed_names_are_gone():
+    import pyodim.pyodim as module
+    for name in ('read_write_odim', 'read_odim_slice_h5', '_read_odim_slice_from_file', '_read_sweep'):
+        assert not hasattr(module, name), name
+    assert not hasattr(pyodim, 'read_write_odim')
+
+
+def test_read_odim_is_eager_by_default(sample_odim_file):
+    radar = read_odim(sample_odim_file)
+    assert isinstance(radar, list) and len(radar) > 1
+    assert all(isinstance(ds, xr.Dataset) for ds in radar)
+
+
+def test_read_odim_lazy_returns_delayed(sample_odim_file):
+    pytest.importorskip('dask')
+    from dask.delayed import Delayed
+    radar = read_odim(sample_odim_file, lazy=True)
+    assert all(isinstance(d, Delayed) for d in radar)
+    first = radar[0].compute()
+    assert isinstance(first, xr.Dataset) and 'TH' in first
+    eager = read_odim(sample_odim_file, sweeps=0)[0]
+    xr.testing.assert_identical(first, eager)
+
+
+def test_read_odim_lazy_forwards_options(sample_odim_file):
+    pytest.importorskip('dask')
+    ds = read_odim(sample_odim_file, lazy=True, sweeps=1, include_fields=['DBZH'], georef=True)[0].compute()
+    assert set(ds.data_vars) == {'DBZH', 'x', 'y', 'z', 'prt', 'longitude', 'latitude'}
+
+
+def test_read_odim_sweeps_selection(sample_odim_file):
+    all_sweeps = read_odim(sample_odim_file)
+    one = read_odim(sample_odim_file, sweeps=2)
+    assert len(one) == 1 and one[0].attrs['id'] == all_sweeps[2].attrs['id']
+    some = read_odim(sample_odim_file, sweeps=[0, 3])
+    assert [ds.attrs['id'] for ds in some] == [all_sweeps[0].attrs['id'], all_sweeps[3].attrs['id']]
+    with pytest.raises(ValueError, match='out of range'):
+        read_odim(sample_odim_file, sweeps=[0, 99])
+
+
+def test_read_odim_return_handle(sample_odim_file):
+    radar, hfile = read_odim(sample_odim_file, return_handle=True, mode='r')
     try:
-        assert len(radar) > 0
-        assert isinstance(radar[0], xr.Dataset)
-    finally:
-        hfile.close()
-
-
-def test_read_write_odim_invalid_backend(sample_odim_file):
-    with pytest.warns(DeprecationWarning):
-        with pytest.raises(ValueError, match='Invalid backend'):
-            read_write_odim(sample_odim_file, backend='cupy')
-
-
-def test_read_odim_invalid_backend(sample_odim_file):
-    with pytest.raises(ValueError, match='Invalid backend'):
-        read_odim(sample_odim_file, backend='cupy')
-
-
-def test_read_write_odim_compute_ignored_for_numpy_backend(sample_odim_file):
-    with pytest.warns(DeprecationWarning):
-        radar, hfile = read_write_odim(sample_odim_file, backend='numpy', compute=False)
-    try:
-        assert len(radar) > 0
-        assert isinstance(radar[0], xr.Dataset)
-    finally:
-        hfile.close()
-
-
-def test_read_odim_compute_ignored_for_numpy_backend(sample_odim_file):
-    radar = read_odim(sample_odim_file, backend='numpy', compute=False)
-    assert len(radar) > 0
-    assert isinstance(radar[0], xr.Dataset)
-
-
-def test_read_write_odim_lazy_load_deprecated_when_backend_missing(sample_odim_file):
-    with pytest.warns(DeprecationWarning):
-        radar, hfile = read_write_odim(sample_odim_file, lazy_load=False, read_write=False)
-    try:
-        assert len(radar) > 0
-    finally:
-        hfile.close()
-
-
-def test_read_write_odim_can_return_dask_backed_fields(sample_odim_file):
-    with pytest.warns(DeprecationWarning):
-        radar, hfile = read_write_odim(
-            sample_odim_file,
-            backend='numpy',
-            read_write=False,
-            use_dask_arrays=True,
-            field_chunks=(64, 256),
-        )
-    try:
-        assert len(radar) > 0
-        first = radar[0]
-        assert isinstance(first['TH'].data, da.Array)
-        assert first['TH'].data.chunks is not None
-    finally:
-        hfile.close()
-
-
-def test_read_write_odim_disallows_dask_fields_with_lazy(sample_odim_file):
-    with pytest.warns(DeprecationWarning):
-        with pytest.raises(ValueError, match='use_dask_arrays=True'):
-            read_write_odim(sample_odim_file, lazy_load=True, use_dask_arrays=True)
-
-
-def test_read_odim_disallows_dask_backed_fields(sample_odim_file):
-    with pytest.raises(ValueError, match='use_dask_arrays=True'):
-        read_odim(sample_odim_file, lazy_load=True, use_dask_arrays=True)
-
-
-def test_read_odim_return_handle_numpy_mode(sample_odim_file):
-    radar, hfile = read_odim(sample_odim_file, backend='numpy', return_handle=True, mode='r')
-    try:
-        assert len(radar) > 0
-        assert isinstance(radar[0], xr.Dataset)
+        assert len(radar) > 0 and isinstance(radar[0], xr.Dataset)
         assert hfile.id.valid
     finally:
         hfile.close()
 
 
-def test_read_odim_disallows_dask_with_non_read_mode(sample_odim_file):
-    with pytest.raises(ValueError, match="mode != 'r'"):
-        read_odim(sample_odim_file, backend='dask', mode='r+', return_handle=True)
+def test_read_odim_lazy_incompatible_options(sample_odim_file):
+    with pytest.raises(ValueError, match='return_handle'):
+        read_odim(sample_odim_file, lazy=True, return_handle=True)
+    with pytest.raises(ValueError, match="mode='r'"):
+        read_odim(sample_odim_file, lazy=True, mode='r+')
+
+
+def test_read_sweep_by_index_key_path_and_handle(sample_odim_file):
+    from_path = read_sweep(sample_odim_file, 0)
+    with h5py.File(sample_odim_file) as h5_file:
+        by_index = read_sweep(h5_file, 0)
+        by_key = read_sweep(h5_file, by_index.attrs['id'])
+        assert h5_file.id.valid  # handle left open
+    xr.testing.assert_identical(from_path, by_index)
+    xr.testing.assert_identical(by_key, by_index)
+
+
+def test_read_sweep_rejects_invalid_sweep():
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        _create_minimal_odim_file(tmp_file.name)
+        with h5py.File(tmp_file.name, 'r') as h5_file:
+            with pytest.raises(ValueError, match='out of range'):
+                read_sweep(h5_file, 1)
+            with pytest.raises(KeyError):
+                read_sweep(h5_file, 'dataset7')
+            with pytest.raises(KeyError):
+                read_sweep(h5_file, 'what')
+
+
+def test_read_sweep_max_field_elements_guard():
+    with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+        _create_minimal_odim_file(tmp_file.name)
+        with pytest.raises(ValueError, match='max_field_elements'):
+            read_sweep(tmp_file.name, 0, max_field_elements=3)
+
+
+def test_read_sweep_unknown_keyword_raises(sample_odim_file):
+    with pytest.raises(TypeError):
+        read_sweep(sample_odim_file, 0, include_field=['DBZH'])
+
+
+def test_read_odim_reads_all_sweeps_in_elevation_order(sample_odim_file):
+    radar = read_odim(sample_odim_file)
+    with h5py.File(sample_odim_file) as h5_file:
+        nsweep = len([k for k in h5_file if k.startswith('dataset')])
+    assert len(radar) == nsweep
+    elevations = [float(ds['elevation'].values[0]) for ds in radar]
+    assert elevations == sorted(elevations)
