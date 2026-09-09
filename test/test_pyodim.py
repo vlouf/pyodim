@@ -3,17 +3,10 @@ import os
 import pyodim
 import pytest
 from pyodim import read_odim, read_sweep, georeference
-from pyodim.pyodim import (
-    antenna_to_ground,
-    check_nyquist,
-    decode_field,
-    geodesic_forward,
-    write_odim_str_attrib,
-    get_dataset_metadata,
-    coord_from_metadata,
-    copy_h5_data,
-    radar_coordinates_to_xyz,
-)
+from pyodim.metadata import check_nyquist, get_dataset_metadata
+from pyodim.georef import antenna_to_ground, coord_from_metadata, geodesic_forward, radar_coordinates_to_xyz
+from pyodim.decode import decode_field
+from pyodim.writer import copy_h5_data, write_odim_str_attrib
 import h5py
 import datetime
 import subprocess
@@ -43,367 +36,196 @@ def radar_datasets(sample_odim_file):
     """
     return read_odim(sample_odim_file)
 
-def test_check_nyquist_valid():
-    """Test check_nyquist with consistent Nyquist velocity."""
-    # Create a dataset with consistent attributes
-    # Formula: nyquist = 1e-2 * prf * wavelength / 4
-    # Example: wavelength=0.053m (C-band), prf=1000Hz -> nyquist=13.25 m/s
-
-    wavelength = 0.053  # meters (C-band radar)
-    prf = 1000.0  # Hz
-    nyquist = 1e-2 * prf * wavelength / 4  # = 13.25 m/s
-
-    ds = xr.Dataset(
-        attrs={
-            'wavelength': wavelength,
-            'highprf': prf,
-            'NI': nyquist
-        }
-    )
-
-    # Should not raise an error
-    check_nyquist(ds)
+# --------------------------------------------------------------------------- #
+# Reading the sample file: independent oracle (plain h5py + numpy) and frozen values
+# --------------------------------------------------------------------------- #
+def _reference_decode(group):
+    """Decode one ODIM data group the long way: raw * gain + offset, nodata/undetect -> NaN."""
+    what = dict(group['what'].attrs)
+    raw = group['data'][()]
+    values = float(what['gain']) * raw.astype(np.float64) + float(what['offset'])
+    missing = (raw == what['nodata']) | (raw == what['undetect'])
+    return np.where(missing, np.nan, values), what
 
 
-def test_read_odim_returns_datasets(sample_odim_file):
-    """
-    Test that read_odim returns a non-empty list of datasets.
-    """
-    rsets = read_odim(sample_odim_file)
-    assert isinstance(rsets, list), "read_odim should return a list of datasets."
-    assert len(rsets) > 0, "No sweeps in radar datasets found."
+def test_read_matches_independent_h5py_decode(sample_odim_file, radar_datasets):
+    """The basic test: every field of every sweep equals a hand-decoded read of the HDF5 file."""
+    with h5py.File(sample_odim_file) as h5_file:
+        keys = [k for k in h5_file if k.startswith('dataset')]
+        expected_order = sorted(
+            keys, key=lambda k: (float(h5_file[k]['where'].attrs['elangle']), h5_file[k]['what'].attrs['starttime'])
+        )
+        assert [ds.attrs['id'] for ds in radar_datasets] == expected_order
 
-def test_dataset_is_xarray(radar_datasets):
-    """
-    Test that each dataset is an xarray Dataset.
-    """
-    dataset = radar_datasets[0].compute()
-    assert isinstance(dataset, xr.Dataset), "Output is not an xarray Dataset."
+        for ds in radar_datasets:
+            group = h5_file[ds.attrs['id']]
+            where = dict(group['where'].attrs)
+            nrays, nbins = int(where['nrays']), int(where['nbins'])
+            fields_checked = 0
+            for key in group:
+                if not key.startswith(('data', 'quality')):
+                    continue
+                expected, what = _reference_decode(group[key])
+                name = what['quantity'].decode()
+                got = ds[name]
+                assert got.dims == ('azimuth', 'range')
+                assert got.shape == (nrays, nbins) == expected.shape
+                assert got.dtype == np.float32
+                np.testing.assert_array_equal(np.isnan(got.values), np.isnan(expected), err_msg=name)
+                # atol: float32 quantisation of values up to ~300 (uint16 fields), far below the 0.1 finest gain
+                np.testing.assert_allclose(got.values, expected, rtol=1e-6, atol=1e-4, equal_nan=True, err_msg=name)
+                assert got.attrs['id'] == key
+                fields_checked += 1
+            assert fields_checked == 8
 
-def test_dataset_has_data_variables(radar_datasets):
-    """
-    Test that the dataset contains data variables.
-    """
-    dataset = radar_datasets[0].compute()
-    assert len(dataset.data_vars) > 0, "Dataset has no data variables."
+            # coordinates straight from the ODIM attributes
+            rstart_m = float(where['rstart']) * (1e3 if where['rstart'] < 10 else 1.0)
+            np.testing.assert_allclose(ds['range'].values, rstart_m + where['rscale'] / 2 + where['rscale'] * np.arange(nbins))
+            astart = float(group['how'].attrs['astart'])
+            np.testing.assert_allclose(ds['azimuth'].values, astart + 0.5 + np.arange(nrays), atol=1e-5)
+            assert ds['elevation'].values.tolist() == [pytest.approx(float(where['elangle']), abs=1e-6)]
+            assert ds.attrs['NI'] == float(group['how'].attrs['NI'])
+            assert ds.attrs['highprf'] == float(group['how'].attrs['highprf'])
 
-def test_geographic_coordinates_present(radar_datasets):
-    """
-    Test that latitude and longitude are added by georeference().
-    """
-    dataset = georeference(radar_datasets[0].compute())
-    assert 'latitude' in dataset.data_vars or 'latitude' in dataset.coords, \
-        "Latitude coordinate is missing."
-    assert 'longitude' in dataset.data_vars or 'longitude' in dataset.coords, \
-        "Longitude coordinate is missing."
+        assert radar_datasets[0].attrs['latitude'] == float(h5_file['where'].attrs['lat'])
+        assert radar_datasets[0].attrs['longitude'] == float(h5_file['where'].attrs['lon'])
+        assert radar_datasets[0].attrs['height'] == float(h5_file['where'].attrs['height'])
+        assert radar_datasets[0].attrs['source'] == h5_file['what'].attrs['source'].decode()
 
-def test_expected_radar_variables(radar_datasets):
-    """
-    Test that expected radar data variables are present.
-    """
-    dataset = radar_datasets[0].compute()
-    assert 'TH' in dataset.data_vars, "Expected data variable 'TH' (reflectivity) is missing."
-    assert 'CLASS' in dataset.data_vars, "Expected data variable 'CLASS' (classification) is missing."
 
-def test_reflectivity_data_shape(radar_datasets):
-    """
-    Test that reflectivity data has valid shape (non-empty).
-    """
-    dataset = radar_datasets[0].compute()
-    assert dataset['TH'].shape[0] > 0, "TH (reflectivity) data has zero size in first dimension."
-    assert dataset['TH'].size > 0, "TH (reflectivity) data is completely empty."
+def test_sample_file_frozen_values(radar_datasets):
+    """Values computed once with plain h5py (not pyodim) and frozen here; a change means the reader changed."""
+    assert len(radar_datasets) == 13
+    elevations = [float(ds['elevation'].values[0]) for ds in radar_datasets]
+    np.testing.assert_allclose(elevations, [0.5, 0.8, 1.4, 2.4, 3.5, 4.7, 6.0, 7.8, 10.0, 13.0, 17.0, 23.0, 32.0], atol=1e-6)
+    assert [ds.attrs['id'] for ds in radar_datasets][:3] == ['dataset13', 'dataset12', 'dataset11']
 
-def test_reflectivity_value_range(radar_datasets):
-    """
-    Test that reflectivity values are within reasonable range.
-    """
-    dataset = radar_datasets[0].compute()
-    th_data = dataset['TH'].values
+    ds = radar_datasets[0]
+    assert ds.attrs['source'] == 'RAD:AU08,PLC:Kanign,CTY:500,STN:40625'
+    assert (ds.attrs['latitude'], ds.attrs['longitude'], ds.attrs['height']) == (-25.9574, 152.577, 375.0)
+    assert ds.attrs['start_time'] == '20241112_005421' and ds.attrs['end_time'] == '20241112_005451'
+    assert set(ds.data_vars) == {'DBZH', 'VRADH', 'WRADH', 'TH', 'QCFLAGS', 'DBZH_CLEAN', 'VRADDH', 'CLASS',
+                                 'x', 'y', 'z', 'prt'}
+    assert dict(ds.sizes) == {'azimuth': 360, 'range': 1196, 'elevation': 1, 'time': 360}
 
-    # Remove NaN/masked values for range check
-    valid_data = th_data[~np.isnan(th_data)]
+    dbzh = ds['DBZH'].values
+    assert dbzh[0, :6].tolist() == [25.0, 23.5, 19.0, 3.0, 5.0, 23.5]
+    assert np.all(np.isnan(dbzh[200, 100:104]))
+    assert int(np.isfinite(dbzh).sum()) == 68593
+    assert float(np.nanmean(dbzh)) == pytest.approx(14.3925, abs=1e-3)
+    assert float(np.nanmax(dbzh)) == 65.5 and float(np.nanmin(dbzh)) == -30.0
+    assert ds['range'].values[0] == 1125.0 and ds['range'].values[-1] == 1125.0 + 250.0 * 1195
+    assert ds['azimuth'].values[0] == 0.0 and ds['azimuth'].values[-1] == 359.0
 
-    if len(valid_data) > 0:
-        assert valid_data.min() >= -40, "TH values unreasonably low (< -40 dBZ)."
-        assert valid_data.max() <= 80, "TH values unreasonably high (> 80 dBZ)."
 
-def test_classification_is_integer(radar_datasets):
-    """
-    Test that classification data contains integer values.
-    """
-    dataset = radar_datasets[0].compute()
-    class_data = dataset['CLASS'].values
+def test_every_sweep_has_the_same_layout(radar_datasets):
+    first = radar_datasets[0]
+    for ds in radar_datasets:
+        assert set(ds.data_vars) == set(first.data_vars)
+        assert set(ds.coords) == {'range', 'azimuth', 'elevation', 'time'}
+        for name in ds.data_vars:
+            expected_dims = ('azimuth',) if name == 'prt' else ('azimuth', 'range')
+            assert ds[name].dims == expected_dims, name
+            assert ds[name].dtype == np.float32, name
+        assert ds.sizes['time'] == ds.sizes['azimuth']
+        assert ds.sizes['elevation'] == 1
 
-    # Check dtype is integer type
-    assert np.issubdtype(class_data.dtype, np.integer) or \
-           np.issubdtype(class_data.dtype, np.floating), \
-           "CLASS data should be numeric."
 
-def test_all_sweeps_have_consistent_variables(radar_datasets):
-    """
-    Test that all sweeps contain the same data variables.
-    """
-    if len(radar_datasets) > 1:
-        first_vars = set(radar_datasets[0].compute().data_vars)
+def test_physical_plausibility(radar_datasets):
+    """Reflectivity in a sane dBZ range with a meaningful fraction of echoes; CLASS is integer-valued."""
+    for ds in radar_datasets:
+        for name in ('TH', 'DBZH'):
+            values = ds[name].values
+            valid = values[np.isfinite(values)]
+            assert 0.01 < valid.size / values.size < 0.9, name
+            assert valid.min() >= -40 and valid.max() <= 80, name
+        cls = ds['CLASS'].values
+        cls_valid = cls[np.isfinite(cls)]
+        assert cls_valid.size > 0
+        np.testing.assert_array_equal(cls_valid, np.round(cls_valid))
+        assert np.all(np.diff(ds['range'].values) == 250.0)
+        assert ds['azimuth'].values.min() >= 0 and ds['azimuth'].values.max() < 360
 
-        for i, rset in enumerate(radar_datasets[1:], start=1):
-            sweep_vars = set(rset.compute().data_vars)
-            assert sweep_vars == first_vars, \
-                f"Sweep {i} has different variables than sweep 0."
 
-def test_dimensions_present(radar_datasets):
-    """
-    Test that expected dimensions are present (e.g., azimuth, range).
-    """
-    dataset = radar_datasets[0].compute()
+def test_ray_times_are_consistent_with_a1gate(sample_odim_file, radar_datasets):
+    with h5py.File(sample_odim_file) as h5_file:
+        for ds in radar_datasets:
+            a1gate = int(h5_file[ds.attrs['id']]['where'].attrs['a1gate'])
+            t = ds['time'].values
+            unrolled = np.roll(t, -a1gate)  # acquisition order
+            assert np.all(np.diff(unrolled).astype(np.int64) > 0)
+            assert np.argmin(t) == a1gate
+            start = np.datetime64(datetime.datetime.strptime(ds.attrs['start_time'], '%Y%m%d_%H%M%S'), 'ns')
+            end = np.datetime64(datetime.datetime.strptime(ds.attrs['end_time'], '%Y%m%d_%H%M%S'), 'ns')
+            assert unrolled[0] == start and unrolled[-1] == end
 
-    # Common ODIM dimensions - adjust based on your implementation
-    expected_dims = {'azimuth', 'range'} | {'elevation'} | {'time'}
 
-    # Check that at least some expected dimensions are present
-    # Use dataset.sizes instead of dataset.dims to avoid FutureWarning
-    actual_dims = set(dataset.sizes.keys())
-    assert len(actual_dims & expected_dims) > 0, \
-        f"Expected dimensions not found. Found: {actual_dims}"
+def test_georeference_is_anchored_to_the_site(radar_datasets):
+    ds = georeference(radar_datasets[0])
+    lat0, lon0 = ds.attrs['latitude'], ds.attrs['longitude']
+    assert ds['latitude'].dims == ds['longitude'].dims == ('azimuth', 'range')
+    # first gate (1.125 km) is within ~0.02 deg of the site, in every direction
+    assert np.abs(ds['latitude'].values[:, 0] - lat0).max() < 0.02
+    assert np.abs(ds['longitude'].values[:, 0] - lon0).max() < 0.02
+    # due north at 300 km: ~2.7 deg of latitude, same longitude; due east: longitude grows
+    north = int(np.argmin(np.abs(ds['azimuth'].values - 0.0)))
+    east = int(np.argmin(np.abs(ds['azimuth'].values - 90.0)))
+    assert ds['latitude'].values[north, -1] - lat0 == pytest.approx(300.0 / 111.0, abs=0.1)
+    assert ds['longitude'].values[north, -1] == pytest.approx(lon0, abs=1e-3)
+    assert ds['longitude'].values[east, -1] > lon0 + 2.5
+    assert np.all(np.abs(ds['latitude'].values) <= 90) and np.all(np.abs(ds['longitude'].values) <= 180)
 
-def test_metadata_attributes(radar_datasets):
-    """
-    Test that important ODIM metadata attributes are preserved.
-    """
-    dataset = radar_datasets[0].compute()
 
-    # Check for common ODIM attributes - adjust based on what pyodim preserves
-    # These might be in dataset.attrs or in coordinate attributes
-    attrs = dataset.attrs
+# --------------------------------------------------------------------------- #
+# Unit tests of the helpers
+# --------------------------------------------------------------------------- #
+def test_check_nyquist_single_prf():
+    """ODIM stores wavelength in cm: 5.3 cm at 1000 Hz gives a 13.25 m/s Nyquist velocity."""
+    check_nyquist({'wavelength': 5.3, 'highprf': 1000.0, 'NI': 13.25})
+    check_nyquist(xr.Dataset(attrs={'wavelength': 5.3, 'highprf': 1000.0, 'NI': 13.25}))
+    with pytest.raises(ValueError, match='Nyquist'):
+        check_nyquist({'wavelength': 5.3, 'highprf': 1000.0, 'NI': 26.5})
 
-    # At minimum, check that some attributes exist
-    assert len(attrs) > 0, "Dataset has no metadata attributes."
 
-def test_coordinate_monotonicity(radar_datasets):
-    """
-    Test that coordinate arrays are monotonic where expected.
-    """
-    dataset = radar_datasets[0].compute()
-
-    if 'range' in dataset.coords:
-        range_vals = dataset.coords['range'].values
-        assert np.all(np.diff(range_vals) > 0), "Range coordinate is not monotonically increasing."
-
-def test_no_all_nan_variables(radar_datasets):
-    """
-    Test that data variables are not completely filled with NaN values.
-    """
-    dataset = radar_datasets[0].compute()
-
-    for var in dataset.data_vars:
-        data = dataset[var].values
-        assert not np.all(np.isnan(data)), f"Variable '{var}' contains only NaN values."
-
-@pytest.mark.parametrize("sweep_idx", [0, 1, 2])
-def test_multiple_sweeps(radar_datasets, sweep_idx):
-    """
-    Test that multiple sweeps can be accessed and are valid.
-    Skips if the requested sweep doesn't exist.
-    """
-    if sweep_idx >= len(radar_datasets):
-        pytest.skip(f"Sweep {sweep_idx} does not exist in this file.")
-
-    dataset = radar_datasets[sweep_idx].compute()
-    assert isinstance(dataset, xr.Dataset), f"Sweep {sweep_idx} is not an xarray Dataset."
-    assert len(dataset.data_vars) > 0, f"Sweep {sweep_idx} has no data variables."
-
-def test_data_array_dtypes(radar_datasets):
-    """
-    Test that data arrays have appropriate data types.
-    """
-    dataset = radar_datasets[0].compute()
-
-    for var in dataset.data_vars:
-        dtype = dataset[var].dtype
-        # Should be numeric types
-        assert np.issubdtype(dtype, np.number), \
-            f"Variable '{var}' has non-numeric dtype: {dtype}"
-
-def test_coordinate_coverage(radar_datasets):
-    """
-    Test that coordinates cover expected ranges for radar data.
-    """
-    dataset = radar_datasets[0].compute()
-
-    if 'azimuth' in dataset.coords:
-        az = dataset.coords['azimuth'].values
-        assert az.min() >= 0, "Azimuth values should be >= 0 degrees."
-        assert az.max() <= 360, "Azimuth values should be <= 360 degrees."
-
-    if 'range' in dataset.coords:
-        rng = dataset.coords['range'].values
-        assert rng.min() >= 0, "Range values should be non-negative."
-        assert rng.max() > 0, "Range should have positive maximum value."
-
-def test_data_variable_dimensions(radar_datasets):
-    """
-    Test that data variables have expected dimensions.
-    """
-    dataset = radar_datasets[0].compute()
-
-    for var in ['TH', 'CLASS']:
-        if var in dataset.data_vars:
-            dims = dataset[var].dims
-            # Should typically have azimuth and range dimensions
-            assert len(dims) >= 2, f"Variable '{var}' should have at least 2 dimensions."
-
-def test_sweep_elevation_ordering(radar_datasets):
-    """
-    Test that sweeps are ordered by increasing elevation angle.
-    """
-    if len(radar_datasets) > 1:
-        elevations = []
-        for rset in radar_datasets:
-            dataset = rset.compute()
-            # Try to get elevation from attributes or coordinates
-            if 'elevation' in dataset.attrs:
-                elevations.append(dataset.attrs['elevation'])
-            elif 'elevation' in dataset.coords:
-                # Use mean if it's an array
-                elevations.append(float(dataset.coords['elevation'].values.mean()))
-
-        if elevations:
-            # Check if generally increasing (allowing for small variations)
-            assert elevations == sorted(elevations), \
-                f"Sweeps should be ordered by elevation. Got: {elevations}"
-
-def test_data_completeness(radar_datasets):
-    """
-    Test that data arrays have reasonable amount of valid (non-NaN) data.
-    """
-    dataset = radar_datasets[0].compute()
-
-    for var in ['TH', 'CLASS']:
-        if var in dataset.data_vars:
-            data = dataset[var].values
-            valid_fraction = np.sum(~np.isnan(data)) / data.size
-            # Should have at least some valid data (adjust threshold as needed)
-            assert valid_fraction > 0.01, \
-                f"Variable '{var}' has too few valid values: {valid_fraction*100:.1f}%"
-
-def test_geographic_coordinate_ranges(radar_datasets):
-    """
-    Test that geographic coordinates are within valid ranges.
-    """
-    dataset = georeference(radar_datasets[0].compute())
-
-    if 'latitude' in dataset.data_vars:
-        lat = dataset['latitude'].values
-        valid_lat = lat[~np.isnan(lat)]
-        if len(valid_lat) > 0:
-            assert valid_lat.min() >= -90, "Latitude values should be >= -90."
-            assert valid_lat.max() <= 90, "Latitude values should be <= 90."
-
-    if 'longitude' in dataset.data_vars:
-        lon = dataset['longitude'].values
-        valid_lon = lon[~np.isnan(lon)]
-        if len(valid_lon) > 0:
-            assert valid_lon.min() >= -180, "Longitude values should be >= -180."
-            assert valid_lon.max() <= 180, "Longitude values should be <= 180."
-
-def test_write_odim_str_attrib():
-    """Test writing ODIM string attributes to HDF5."""
+def test_write_odim_str_attrib_is_null_terminated_fixed_length():
+    """ODIM requires fixed-length, null-terminated strings (not h5py's default null-padded ones)."""
     with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
         with h5py.File(tmp_file.name, 'w') as h5_file:
             grp = h5_file.create_group('test_group')
-
-            # Write string attribute
             write_odim_str_attrib(grp, 'source', 'WMO:12345')
-
-            # Verify
-            assert 'source' in grp.attrs
-            assert grp.attrs['source'] == b'WMO:12345' or grp.attrs['source'] == 'WMO:12345'
+            write_odim_str_attrib(grp, 'source', 'WMO:54321')  # overwrite
+            assert grp.attrs['source'] == b'WMO:54321'
+            type_id = h5py.h5a.open(grp.id, b'source').get_type()
+            assert type_id.get_class() == h5py.h5t.STRING
+            assert type_id.get_strpad() == h5py.h5t.STR_NULLTERM
+            assert type_id.get_size() == len(b'WMO:54321') + 1
+            assert not type_id.is_variable_str()
 
 
 def test_get_dataset_metadata_normalizes_small_rstart_to_meters():
-    """Read-time metadata extraction should convert small rstart values from km to m."""
+    """Read-time metadata extraction should convert small rstart values from km to m (BOM legacy files)."""
     with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
-        with h5py.File(tmp_file.name, 'w') as h5_file:
-            h5_file.attrs['Conventions'] = np.bytes_('ODIM_H5/V2_4')
-
-            root_what = h5_file.create_group('/what')
-            root_what.attrs['version'] = np.bytes_('H5rad 2.4')
-
-            dataset = h5_file.create_group('/dataset1')
-            ds_how = dataset.create_group('how')
-            ds_what = dataset.create_group('what')
-            ds_where = dataset.create_group('where')
-
-            ds_what.attrs['startdate'] = np.bytes_('20240101')
-            ds_what.attrs['starttime'] = np.bytes_('000000')
-            ds_what.attrs['enddate'] = np.bytes_('20240101')
-            ds_what.attrs['endtime'] = np.bytes_('000100')
-
-            ds_where.attrs['a1gate'] = 0
-            ds_where.attrs['nrays'] = 360
-            ds_where.attrs['rstart'] = 1.0
-            ds_where.attrs['rscale'] = 250.0
-            ds_where.attrs['nbins'] = 4
-            ds_where.attrs['elangle'] = 0.5
-
+        _create_minimal_odim_file(tmp_file.name)
+        with h5py.File(tmp_file.name, 'r+') as h5_file:
+            h5_file['/dataset1/where'].attrs['rstart'] = 1.0
+        with h5py.File(tmp_file.name, 'r') as h5_file:
             _, coordinates_metadata = get_dataset_metadata(h5_file, 'dataset1')
             assert coordinates_metadata['rstart'] == pytest.approx(1000.0)
 
 
 def test_get_dataset_metadata_keeps_large_rstart_in_meters():
-    """Read-time metadata extraction should keep large rstart values as meters."""
     with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
-        with h5py.File(tmp_file.name, 'w') as h5_file:
-            h5_file.attrs['Conventions'] = np.bytes_('ODIM_H5/V2_4')
-
-            root_what = h5_file.create_group('/what')
-            root_what.attrs['version'] = np.bytes_('H5rad 2.4')
-
-            dataset = h5_file.create_group('/dataset1')
-            ds_how = dataset.create_group('how')
-            ds_what = dataset.create_group('what')
-            ds_where = dataset.create_group('where')
-
-            ds_what.attrs['startdate'] = np.bytes_('20240101')
-            ds_what.attrs['starttime'] = np.bytes_('000000')
-            ds_what.attrs['enddate'] = np.bytes_('20240101')
-            ds_what.attrs['endtime'] = np.bytes_('000100')
-
-            ds_where.attrs['a1gate'] = 0
-            ds_where.attrs['nrays'] = 360
-            ds_where.attrs['rstart'] = 1000.0
-            ds_where.attrs['rscale'] = 250.0
-            ds_where.attrs['nbins'] = 4
-            ds_where.attrs['elangle'] = 0.5
-
+        _create_minimal_odim_file(tmp_file.name)  # rstart = 1000.0 m
+        with h5py.File(tmp_file.name, 'r') as h5_file:
             _, coordinates_metadata = get_dataset_metadata(h5_file, 'dataset1')
             assert coordinates_metadata['rstart'] == pytest.approx(1000.0)
 
 
-def test_coord_from_metadata_uses_normalized_rstart():
-    """Range coordinate should start at gate center in meters for both encodings."""
-    metadata_km = {
-        "astart": 0,
-        "nrays": 360,
-        "nbins": 4,
-        "rstart": 1000.0,
-        "rscale": 250.0,
-        "elangle": 0.5,
-    }
-    metadata_m = {
-        "astart": 0,
-        "nrays": 360,
-        "nbins": 4,
-        "rstart": 1000.0,
-        "rscale": 250.0,
-        "elangle": 0.5,
-    }
-
-    r_km, _, _ = coord_from_metadata(metadata_km)
-    r_m, _, _ = coord_from_metadata(metadata_m)
-
-    assert r_km[0] == pytest.approx(1125.0)
-    assert r_m[0] == pytest.approx(1125.0)
+def test_coord_from_metadata_range_is_gate_centre():
+    metadata = {"astart": 0, "nrays": 360, "nbins": 4, "rstart": 1000.0, "rscale": 250.0, "elangle": 0.5}
+    r, az, elev = coord_from_metadata(metadata)
+    np.testing.assert_allclose(r, [1125.0, 1375.0, 1625.0, 1875.0])
+    assert r.dtype == np.float32 and az.shape == (360,) and elev.tolist() == [0.5]
 
 
 def _create_minimal_odim_file(path):
@@ -733,10 +555,11 @@ def test_import_does_not_load_optional_packages():
 # read_odim / read_sweep API (0.7)
 # --------------------------------------------------------------------------- #
 def test_removed_names_are_gone():
-    import pyodim.pyodim as module
+    import pyodim.reader as module
     for name in ('read_write_odim', 'read_odim_slice_h5', '_read_odim_slice_from_file', '_read_sweep'):
         assert not hasattr(module, name), name
-    assert not hasattr(pyodim, 'read_write_odim')
+        assert not hasattr(pyodim, name), name
+    assert not hasattr(pyodim, 'pyodim')  # the monolithic module is gone
 
 
 def test_read_odim_is_eager_by_default(sample_odim_file):

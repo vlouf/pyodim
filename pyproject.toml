@@ -51,3 +51,10 @@ packages = ["pyodim"]
 
 [tool.setuptools.dynamic]
 version = {attr = "pyodim.__version__.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+filterwarnings = [
+    # netCDF4's compiled extension was built against another NumPy ABI; harmless, not pyodim's
+    "ignore:numpy.ndarray size changed:RuntimeWarning",
+]
