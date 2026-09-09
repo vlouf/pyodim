@@ -23,6 +23,9 @@ All notable changes to this project will be documented in this file.
 - Unknown keyword arguments to `read_odim` raise `TypeError` instead of being ignored.
 
 ### Changed (breaking)
+- The single `pyodim/pyodim.py` module is split into `reader`, `georef`, `metadata`,
+  `decode` and `writer`. The public API is unchanged and re-exported from `pyodim`;
+  `from pyodim.pyodim import ...` becomes e.g. `from pyodim.georef import ...`.
 - `read_odim` is eager: it returns a list of `xarray.Dataset` (it used to return
   `dask.delayed` objects). `read_odim(..., lazy=True)` returns delayed sweeps.
 - `read_sweep(source, sweep)` replaces `read_odim_slice_h5`: `source` is a path or an

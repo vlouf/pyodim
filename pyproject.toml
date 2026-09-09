@@ -51,6 +51,3 @@ packages = ["pyodim"]
 
 [tool.setuptools.dynamic]
 version = {attr = "pyodim.__version__.__version__"}
-
-# [tool.setuptools.package-data]
-# pyodim = ["**/*"]
