@@ -652,3 +652,19 @@ def test_read_odim_reads_all_sweeps_in_elevation_order(sample_odim_file):
     assert len(radar) == nsweep
     elevations = [float(ds['elevation'].values[0]) for ds in radar]
     assert elevations == sorted(elevations)
+
+
+def test_read_from_in_memory_buffer(sample_odim_file, radar_datasets):
+    """h5py accepts file-like objects, so zip members can be read without touching disk."""
+    import io
+    import zipfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        zip_file = os.path.join(tmpdir, 'archive.zip')
+        with zipfile.ZipFile(zip_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.write(sample_odim_file, 'volume.h5')
+        with zipfile.ZipFile(zip_file) as zf:
+            payload = zf.read('volume.h5')
+    from_buffer = read_odim(io.BytesIO(payload), sweeps=[0, 5])
+    xr.testing.assert_identical(from_buffer[0], radar_datasets[0])
+    xr.testing.assert_identical(from_buffer[1], radar_datasets[5])
+    xr.testing.assert_identical(read_sweep(io.BytesIO(payload), 3), radar_datasets[3])
