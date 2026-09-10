@@ -4,7 +4,7 @@ Reading ODIM H5 sweeps into xarray Datasets: `read_sweep` and `read_odim`.
 
 import os
 import warnings
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import IO, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import h5py
 import numpy as np
@@ -26,7 +26,7 @@ from .metadata import (
 
 
 def read_sweep(
-    source: Union[str, "os.PathLike[str]", h5py.File],
+    source: Union[str, "os.PathLike[str]", IO[bytes], h5py.File],
     sweep: Union[int, str],
     *,
     mode: str = "r",
@@ -43,8 +43,8 @@ def read_sweep(
 
     Parameters
     ----------
-    source : str, path-like or h5py.File
-        Path to the file (opened with `mode` and closed on return) or an
+    source : str, path-like, binary file-like or h5py.File
+        Path or binary file object (opened with `mode` and closed on return) or an
         already open HDF5 file handle (left open).
     sweep : int or str
         Sweep to read: an index into the sweeps ordered by increasing elevation
@@ -226,7 +226,7 @@ def _build_sweep(
 
 
 def read_odim(
-    odim_file: Union[str, "os.PathLike[str]"],
+    odim_file: Union[str, "os.PathLike[str]", IO[bytes]],
     *,
     sweeps: Union[None, int, Sequence[int]] = None,
     lazy: bool = False,
@@ -240,8 +240,9 @@ def read_odim(
 
     Parameters
     ----------
-    odim_file : str or path-like
-        Path to the ODIM HDF5 radar file.
+    odim_file : str, path-like or binary file-like
+        Path to the ODIM HDF5 radar file, or an open binary file object such as
+        ``io.BytesIO(zip_member_bytes)`` (anything ``h5py.File`` accepts; not with `lazy=True`).
     sweeps : int or sequence of int, optional
         Sweep index (or indices) to read, in elevation order. All sweeps if omitted.
     lazy : bool, optional
