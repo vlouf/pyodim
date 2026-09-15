@@ -100,6 +100,7 @@ ODIM `id` are kept in its attributes.
 - `lazy` (bool): return `dask.delayed` objects instead of datasets.
 - `mode` (str): HDF5 mode, `"r"` or `"r+"`.
 - `return_handle` (bool): return `(sweeps, hfile)` and leave the file open.
+- `lazy_load` (bool): deprecated alias for `lazy` (pyodim < 0.7), emits a `DeprecationWarning`.
 
 `read_sweep(source, sweep, *, mode="r", **options)`
 

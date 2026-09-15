@@ -585,6 +585,19 @@ def test_read_odim_lazy_forwards_options(sample_odim_file):
     assert set(ds.data_vars) == {'DBZH', 'x', 'y', 'z', 'prt', 'longitude', 'latitude'}
 
 
+def test_read_odim_lazy_load_is_deprecated_alias(sample_odim_file):
+    pytest.importorskip('dask')
+    from dask.delayed import Delayed
+    with pytest.warns(DeprecationWarning, match='lazy_load'):
+        radar = read_odim(sample_odim_file, lazy_load=True)
+    assert all(isinstance(d, Delayed) for d in radar)
+    with pytest.warns(DeprecationWarning, match='lazy_load'):
+        eager = read_odim(sample_odim_file, sweeps=0, lazy_load=False)
+    assert isinstance(eager[0], xr.Dataset)
+    with pytest.warns(DeprecationWarning), pytest.raises(TypeError, match='lazy_load'):
+        read_odim(sample_odim_file, lazy=True, lazy_load=False)
+
+
 def test_read_odim_sweeps_selection(sample_odim_file):
     all_sweeps = read_odim(sample_odim_file)
     one = read_odim(sample_odim_file, sweeps=2)

@@ -31,8 +31,10 @@ All notable changes to this project will be documented in this file.
 - `read_sweep(source, sweep)` replaces `read_odim_slice_h5`: `source` is a path or an
   open `h5py.File`, `sweep` an index in elevation order or a `"datasetN"` key.
 - `nslice` is replaced by `sweeps` (int or list of int); `read_odim` arguments are keyword-only.
-- Removed: `read_write_odim`, `lazy_load`, `backend`, `compute`, `use_dask_arrays`,
+- Removed: `read_write_odim`, `backend`, `compute`, `use_dask_arrays`,
   `field_chunks`, `read_odim_slice_h5`.
+- Deprecated: `read_odim(..., lazy_load=)` still works as an alias for `lazy=` but
+  emits a `DeprecationWarning` and will be removed in a future release.
 - `longitude`/`latitude` are no longer computed at read time. Call
   `pyodim.georeference(ds)` or `read_odim(..., georef=True)`. The pyproj aeqd inverse
   was ~70 % of the read time; the new pure-numpy WGS84 geodesic is 3x faster and

@@ -232,6 +232,7 @@ def read_odim(
     lazy: bool = False,
     mode: str = "r",
     return_handle: bool = False,
+    lazy_load: Optional[bool] = None,
     **options,
 ) -> Union[List[xr.Dataset], Tuple[List[xr.Dataset], h5py.File]]:
     """
@@ -253,6 +254,8 @@ def read_odim(
     return_handle : bool, optional
         If True, return `(sweeps, hfile)` with the file left open; the caller
         must close it. Not available with `lazy=True`.
+    lazy_load : bool, optional
+        Deprecated alias for `lazy`, kept for pyodim < 0.7 compatibility.
     **options
         Forwarded to `read_sweep`: `include_fields`, `exclude_fields`, `check_nyq`,
         `max_field_elements`, `mask_undetect`, `georef`. Unknown names raise `TypeError`.
@@ -262,6 +265,16 @@ def read_odim(
     list of xr.Dataset (or of dask.delayed when `lazy=True`)
     tuple (list, h5py.File) when `return_handle=True`
     """
+    if lazy_load is not None:
+        warnings.warn(
+            "read_odim(lazy_load=...) is deprecated and will be removed in a future release: use lazy=... instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if lazy and not lazy_load:
+            raise TypeError("read_odim() got conflicting values for lazy and its deprecated alias lazy_load.")
+        lazy = bool(lazy_load)
+
     if lazy and return_handle:
         raise ValueError("return_handle=True is not available with lazy=True (each delayed sweep opens its own handle).")
     if lazy and mode != "r":
