@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.7.1] 29 September 2026
+
+### Added
+- Field-level `how` attributes (`dataX/how`, `qualityX/how`) are kept in each field's
+  attrs, decoded to plain Python types (bytes → str, arrays → lists). They no longer
+  override the `what` encoding (`gain`, `offset`, `nodata`, `undetect`, `id`).
+- Class definitions stored as `how/key_values` + `how/key_labels` (e.g. Bureau of
+  Meteorology `CLASS` fields) are also exposed as CF `flag_values` (float32, decoded
+  with `gain`/`offset`) and `flag_meanings`.
+
 ## [v0.7.0] 9 September 2026
 
 ### Fixed
