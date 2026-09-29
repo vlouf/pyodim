@@ -94,7 +94,10 @@ def _as_python(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         if value.dtype.kind in ("S", "U"):
             return _as_str(value)
-        return value.item() if value.size == 1 else value
+        if value.dtype.kind == "O":  # h5py variable-length strings
+            items = [_as_str(v) for v in value.ravel()]
+            return items[0] if len(items) == 1 else items
+        return value.item() if value.size == 1 else value.tolist()
     if isinstance(value, np.generic):
         return value.item()
     return value
@@ -170,6 +173,70 @@ def field_metadata(quantity_name: str) -> Dict:
         Metadata dictionnary (a copy; empty if the quantity is unknown).
     """
     return dict(FIELD_METADATA.get(quantity_name, {}))
+
+
+def get_field_how_attrs(field_group) -> Dict[str, Any]:
+    """
+    Get all the attributes of a field's `how` group (e.g. `dataset1/data1/how`).
+
+    Keys keep their ODIM names; values are converted to plain Python types
+    (bytes -> str, arrays -> lists). Multi-dimensional or compound attributes
+    cannot be stored as netCDF attributes and are skipped with a warning.
+
+    Parameters:
+    ===========
+    field_group: h5py.Group
+        The `dataX` or `qualityX` group.
+
+    Returns:
+    ========
+    attrs: dict
+        Field `how` attributes (empty if the group has no `how`).
+    """
+    if "how" not in field_group:
+        return {}
+    attrs: Dict[str, Any] = {}
+    for key, value in field_group["how"].attrs.items():
+        if isinstance(value, np.ndarray) and (value.ndim > 1 or value.dtype.kind == "V"):
+            warnings.warn(f"Skipping {field_group.name}/how/{key}: not representable as an attribute.", UserWarning)
+            continue
+        if value is not None:
+            attrs[key] = _as_python(value)
+    return attrs
+
+
+def cf_flag_attrs(how_attrs: Mapping[str, Any], gain: float, offset: float, name: str = "") -> Dict[str, Any]:
+    """
+    CF `flag_values` / `flag_meanings` from the `key_values` / `key_labels`
+    class definitions that some producers (e.g. the Bureau of Meteorology) store in a field's `how`.
+
+    `key_values` are taken as stored (raw) values and decoded with `gain`/`offset`,
+    so that `flag_values` match the decoded float32 field as CF requires.
+
+    Returns:
+    ========
+    attrs: dict
+        `flag_values` (float32 array) and `flag_meanings` (space-separated), or
+        empty if the keys are missing or inconsistent.
+    """
+    if "key_values" not in how_attrs or "key_labels" not in how_attrs:
+        return {}
+    values = np.atleast_1d(np.asarray(how_attrs["key_values"], dtype=np.float64))
+    labels = how_attrs["key_labels"]
+    if isinstance(labels, str):
+        labels = labels.split(",")
+    labels = ["_".join(str(label).split()) for label in labels]  # CF meanings are blank-separated words
+    if values.ndim != 1 or len(labels) != values.size or not all(labels):
+        warnings.warn(
+            f"Field '{name}': inconsistent key_values ({values.size}) and key_labels ({len(labels)}, "
+            "empty labels not allowed), flag attributes not set.",
+            UserWarning,
+        )
+        return {}
+    return {
+        "flag_values": (gain * values + offset).astype(np.float32),
+        "flag_meanings": " ".join(labels),
+    }
 
 
 def get_dataset_metadata(hfile, dataset: str = "dataset1") -> Tuple[Dict, Dict]:
