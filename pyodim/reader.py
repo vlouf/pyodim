@@ -16,9 +16,11 @@ from .metadata import (
     _as_str,
     _clean_attrs,
     _sorted_sweep_keys,
+    cf_flag_attrs,
     check_nyquist,
     field_metadata,
     get_dataset_metadata,
+    get_field_how_attrs,
     get_root_metadata,
 )
 
@@ -69,7 +71,9 @@ def read_sweep(
     -------
     xr.Dataset
         - Radar fields (float32, NaN for missing data; `gain`, `offset`, `nodata`,
-          `undetect` and the ODIM `id` kept in each field's attrs)
+          `undetect`, the ODIM `id` and the field's `how` attributes kept in each
+          field's attrs; `key_values`/`key_labels` class definitions are also
+          exposed as CF `flag_values`/`flag_meanings`)
         - Coordinates: range, azimuth, elevation, time
         - Geometry: x, y, z (4/3 Earth model, z above mean sea level), prt
         - Metadata attributes (root and sweep-specific)
@@ -180,12 +184,17 @@ def _build_sweep(
                 UserWarning,
             )
 
+        # Precedence: pyodim defaults < field `how` < the `what` encoding used to decode the data.
+        how_attrs = get_field_how_attrs(field_group)
         attrs = field_metadata(name)
+        attrs.update(how_attrs)
         attrs.update({"id": datakey, "gain": gain, "offset": offset})
         if nodata is not None:
             attrs["nodata"] = nodata
         if undetect is not None:
             attrs["undetect"] = undetect
+        if "flag_values" not in attrs and "flag_meanings" not in attrs:
+            attrs.update(cf_flag_attrs(how_attrs, gain, offset, name))
         field_data[name] = (("azimuth", "range"), data_value, attrs)
 
     time = generate_timestamp(metadata["start_time"], metadata["end_time"], nrays, coordinates_metadata["a1gate"])
